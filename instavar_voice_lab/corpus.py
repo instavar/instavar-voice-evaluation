@@ -131,7 +131,7 @@ def audit_corpus(
         "audio_field": audio_field,
         "text_field": text_field,
         "group_field": group_field,
-        "grouped_split_verified": bool(group_field) and not any("group " in error and "leaks" in error for error in errors),
+        "grouped_split_verified": bool(group_field) and not errors,
         "splits": split_reports,
         "errors": errors,
         "warnings": warnings,

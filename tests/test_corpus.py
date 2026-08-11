@@ -53,6 +53,19 @@ class CorpusAuditTests(unittest.TestCase):
             self.assertEqual(result["status"], "failed")
             self.assertIn("splits must declare exactly train, validation, and test", result["errors"])
 
+    def test_missing_group_cannot_be_reported_as_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            splits = self.fixture(root)
+            row = json.loads(splits["validation"].read_text(encoding="utf-8"))
+            row.pop("recording_id")
+            splits["validation"].write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+            result = audit_corpus(splits, group_field="recording_id")
+
+            self.assertEqual(result["status"], "failed")
+            self.assertFalse(result["grouped_split_verified"])
+
 
 if __name__ == "__main__":
     unittest.main()
