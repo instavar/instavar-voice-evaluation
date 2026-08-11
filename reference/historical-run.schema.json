@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/instavar/instavar-voice-evaluation/main/reference/historical-run.schema.json",
+  "title": "Instavar Voice historical run evidence import",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "repository",
+    "model_family",
+    "adaptation_mode",
+    "evidence_revision",
+    "observed_date",
+    "source_refs",
+    "stage_evidence",
+    "contract_migration"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "repository": { "type": "string", "minLength": 1 },
+    "model_family": { "type": "string", "minLength": 1 },
+    "adaptation_mode": {
+      "enum": ["zero_shot", "lora", "full_sft", "partial_sft", "prompt_adapter"]
+    },
+    "evidence_revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "observed_date": { "type": "string", "minLength": 1 },
+    "source_refs": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+    "stage_evidence": { "type": "object" },
+    "contract_migration": { "type": "object" }
+  },
+  "additionalProperties": true
+}

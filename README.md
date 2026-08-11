@@ -31,6 +31,7 @@ instavar-voice-eval validate capability examples/capability-manifest.json
 instavar-voice-eval validate experiment examples/experiment-manifest.json
 instavar-voice-eval validate evaluation examples/evaluation-report.json
 instavar-voice-eval validate package examples/artifact-package.json
+instavar-voice-eval validate historical examples/historical-run.json
 ```
 
 Validate a companion repository after it adds `instavar-voice-capabilities.json`:
@@ -40,6 +41,8 @@ instavar-voice-eval validate-repository /path/to/companion-repository
 ```
 
 The checked-in JSON Schemas provide editor and ecosystem interoperability. The Python validator adds semantic checks that are awkward or misleading in schema alone, including evidence requirements for supported capabilities, unique runtime identifiers, distinct corpus split hashes, baseline presence, and the ban on a universal composite evaluation score.
+
+Historical runs often predate the strict experiment and package contracts. Import them with the historical-run contract instead of inventing missing hashes. The record preserves stage-specific evidence and names the exact blockers that prevent migration into a complete experiment manifest or deployable artifact package.
 
 ## Probe generated audio
 

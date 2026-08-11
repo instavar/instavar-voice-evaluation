@@ -22,6 +22,7 @@ class ContractTests(unittest.TestCase):
             "experiment": "experiment-manifest.json",
             "evaluation": "evaluation-report.json",
             "package": "artifact-package.json",
+            "historical": "historical-run.json",
         }
         for kind, filename in examples.items():
             with self.subTest(kind=kind):
@@ -50,6 +51,12 @@ class ContractTests(unittest.TestCase):
         manifest["corpus"]["split_hashes"]["test"] = manifest["corpus"]["split_hashes"]["train"]
         errors = validate_document("experiment", manifest)
         self.assertTrue(any(error.path == "$.corpus.split_hashes" for error in errors))
+
+    def test_historical_blocked_migration_requires_blockers(self) -> None:
+        record = load_example("historical-run.json")
+        record["contract_migration"]["blockers"] = []
+        errors = validate_document("historical", record)
+        self.assertTrue(any(error.path == "$.contract_migration.blockers" for error in errors))
 
 
 if __name__ == "__main__":
