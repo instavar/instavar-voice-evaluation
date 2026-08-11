@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.0.0",
+  "run_id": "example-historical-run",
+  "repository": "instavar/example-tts-adapter",
+  "model_family": "Example TTS",
+  "adaptation_mode": "lora",
+  "evidence_revision": "1111111111111111111111111111111111111111",
+  "observed_date": "2026-08-12",
+  "source_refs": ["README.md#recorded-run"],
+  "stage_evidence": {
+    "preflight": {
+      "status": "not_recorded",
+      "evidence_refs": [],
+      "boundary": "The historical notes do not preserve a production-path preflight artifact."
+    },
+    "training": {
+      "status": "observed",
+      "evidence_refs": ["README.md#recorded-run"],
+      "boundary": "Training completion was documented, but the full environment was not captured."
+    },
+    "inference": {
+      "status": "validated",
+      "evidence_refs": ["README.md#inference"],
+      "boundary": "One checkpoint produced a valid WAV through the documented runtime."
+    },
+    "evaluation": {
+      "status": "not_recorded",
+      "evidence_refs": [],
+      "boundary": "No frozen objective and blind-listening report was preserved."
+    },
+    "packaging": {
+      "status": "not_recorded",
+      "evidence_refs": [],
+      "boundary": "Artifact hashes and a deployment package were not preserved."
+    }
+  },
+  "contract_migration": {
+    "experiment_manifest": "blocked",
+    "artifact_package": "blocked",
+    "blockers": [
+      "Corpus split hashes are unavailable.",
+      "The selected artifact hash and byte count are unavailable."
+    ]
+  }
+}

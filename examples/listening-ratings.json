@@ -1,0 +1,9 @@
+{
+  "scale": { "min": 1, "max": 5 },
+  "ratings": [
+    { "rater_id": "rater-a", "blind_id": "sample-0001", "criterion": "speaker_identity", "score": 4 },
+    { "rater_id": "rater-b", "blind_id": "sample-0001", "criterion": "speaker_identity", "score": 5 },
+    { "rater_id": "rater-a", "blind_id": "sample-0002", "criterion": "speaker_identity", "score": 3 },
+    { "rater_id": "rater-b", "blind_id": "sample-0002", "criterion": "speaker_identity", "score": 3 }
+  ]
+}

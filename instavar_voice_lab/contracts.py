@@ -372,11 +372,73 @@ def validate_package_manifest(document: Any) -> list[ContractError]:
     return errors
 
 
+def validate_historical_run(document: Any) -> list[ContractError]:
+    errors: list[ContractError] = []
+    root = _mapping(document, "$", errors)
+    _required(
+        root,
+        {
+            "schema_version",
+            "run_id",
+            "repository",
+            "model_family",
+            "adaptation_mode",
+            "evidence_revision",
+            "observed_date",
+            "source_refs",
+            "stage_evidence",
+            "contract_migration",
+        },
+        "$",
+        errors,
+    )
+    if root.get("schema_version") != "1.0.0":
+        errors.append(ContractError("$.schema_version", "must equal 1.0.0"))
+    for key in ("run_id", "repository", "model_family", "observed_date"):
+        _nonempty_string(root.get(key), f"$.{key}", errors)
+    _enum(root.get("adaptation_mode"), ADAPTATION_MODES, "$.adaptation_mode", errors)
+    _sha(root.get("evidence_revision"), "$.evidence_revision", errors, git=True)
+    source_refs = _list(root.get("source_refs"), "$.source_refs", errors)
+    if not source_refs:
+        errors.append(ContractError("$.source_refs", "must not be empty"))
+    for index, value in enumerate(source_refs):
+        _nonempty_string(value, f"$.source_refs[{index}]", errors)
+
+    stage_evidence = _mapping(root.get("stage_evidence"), "$.stage_evidence", errors)
+    required_stages = {"preflight", "training", "inference", "evaluation", "packaging"}
+    _required(stage_evidence, required_stages, "$.stage_evidence", errors)
+    for stage in sorted(required_stages):
+        value = _mapping(stage_evidence.get(stage), f"$.stage_evidence.{stage}", errors)
+        _required(value, {"status", "evidence_refs", "boundary"}, f"$.stage_evidence.{stage}", errors)
+        _enum(
+            value.get("status"),
+            {"observed", "validated", "negative_result", "not_recorded"},
+            f"$.stage_evidence.{stage}.status",
+            errors,
+        )
+        refs = _list(value.get("evidence_refs"), f"$.stage_evidence.{stage}.evidence_refs", errors)
+        for index, ref in enumerate(refs):
+            _nonempty_string(ref, f"$.stage_evidence.{stage}.evidence_refs[{index}]", errors)
+        _nonempty_string(value.get("boundary"), f"$.stage_evidence.{stage}.boundary", errors)
+
+    migration = _mapping(root.get("contract_migration"), "$.contract_migration", errors)
+    _required(migration, {"experiment_manifest", "artifact_package", "blockers"}, "$.contract_migration", errors)
+    for key in ("experiment_manifest", "artifact_package"):
+        _enum(migration.get(key), {"complete", "blocked"}, f"$.contract_migration.{key}", errors)
+    blockers = _list(migration.get("blockers"), "$.contract_migration.blockers", errors)
+    for index, value in enumerate(blockers):
+        _nonempty_string(value, f"$.contract_migration.blockers[{index}]", errors)
+    if "blocked" in {migration.get("experiment_manifest"), migration.get("artifact_package")} and not blockers:
+        errors.append(ContractError("$.contract_migration.blockers", "must explain every blocked migration"))
+    return errors
+
+
 VALIDATORS: dict[str, Callable[[Any], list[ContractError]]] = {
     "capability": validate_capability_manifest,
     "experiment": validate_experiment_manifest,
     "evaluation": validate_evaluation_report,
     "package": validate_package_manifest,
+    "historical": validate_historical_run,
 }
 
 

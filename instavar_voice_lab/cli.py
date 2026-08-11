@@ -8,7 +8,9 @@ from pathlib import Path
 from .audio_probe import compare_wav_probes, probe_wav
 from .contracts import VALIDATORS, validate_document
 from .corpus import audit_corpus
-from .listening import build_blind_pack
+from .lifecycle import run_lifecycle, validate_backend_spec
+from .listening import aggregate_listening_results, build_blind_pack
+from .metrics import score_objective_observations
 
 
 def _read_json(path: Path):
@@ -77,6 +79,35 @@ def build_parser() -> argparse.ArgumentParser:
     blind.add_argument("--review-output", type=Path, required=True)
     blind.add_argument("--reveal-output", type=Path, required=True)
     blind.add_argument("--seed", type=int, required=True)
+
+    objective = commands.add_parser(
+        "score-objective",
+        help="score versioned ASR, speaker, validity, runtime, and memory observations",
+    )
+    objective.add_argument("observations", type=Path)
+    objective.add_argument("--output", type=Path, required=True)
+    objective.add_argument("--seed", type=int, default=20260812)
+
+    listening = commands.add_parser(
+        "aggregate-listening",
+        help="reveal and aggregate completed blind ratings without a composite score",
+    )
+    listening.add_argument("review", type=Path)
+    listening.add_argument("reveal", type=Path)
+    listening.add_argument("ratings", type=Path)
+    listening.add_argument("--output", type=Path, required=True)
+    listening.add_argument("--seed", type=int, default=20260812)
+
+    backend = commands.add_parser("validate-backend", help="validate a lifecycle backend specification")
+    backend.add_argument("spec", type=Path)
+
+    lifecycle = commands.add_parser(
+        "run-lifecycle",
+        help="run fail-closed preflight, train, infer, evaluate, and package stages",
+    )
+    lifecycle.add_argument("backend", type=Path)
+    lifecycle.add_argument("experiment", type=Path)
+    lifecycle.add_argument("--work-dir", type=Path, required=True)
     return parser
 
 
@@ -141,4 +172,48 @@ def main(argv: list[str] | None = None) -> int:
         _write_json(args.review_output, review)
         _write_json(args.reveal_output, reveal)
         return 0
+    if args.command == "score-objective":
+        try:
+            rows = _read_json(args.observations)
+            if not isinstance(rows, list):
+                raise ValueError("objective observations must be a JSON array")
+            result = score_objective_observations(rows, seed=args.seed)
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0
+    if args.command == "aggregate-listening":
+        try:
+            result = aggregate_listening_results(
+                _read_json(args.review),
+                _read_json(args.reveal),
+                _read_json(args.ratings),
+                seed=args.seed,
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0
+    if args.command == "validate-backend":
+        try:
+            errors = validate_backend_spec(_read_json(args.spec))
+        except (OSError, json.JSONDecodeError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        if errors:
+            for error in errors:
+                print(error, file=sys.stderr)
+            return 1
+        print(f"valid lifecycle backend: {args.spec}")
+        return 0
+    if args.command == "run-lifecycle":
+        try:
+            result = run_lifecycle(args.backend, args.experiment, args.work_dir)
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result["status"] == "passed" else 1
     raise AssertionError(f"unhandled command: {args.command}")

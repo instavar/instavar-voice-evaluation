@@ -1,0 +1,241 @@
+from __future__ import annotations
+
+import math
+import random
+import re
+from statistics import mean, median
+from typing import Any, Iterable
+
+
+TOKEN_RE = re.compile(r"[\w']+", re.UNICODE)
+
+
+def _tokens(text: str) -> list[str]:
+    return TOKEN_RE.findall(text.casefold())
+
+
+def _edit_distance(reference: list[str], hypothesis: list[str]) -> int:
+    previous = list(range(len(hypothesis) + 1))
+    for row, reference_token in enumerate(reference, start=1):
+        current = [row]
+        for column, hypothesis_token in enumerate(hypothesis, start=1):
+            current.append(
+                min(
+                    current[-1] + 1,
+                    previous[column] + 1,
+                    previous[column - 1] + (reference_token != hypothesis_token),
+                )
+            )
+        previous = current
+    return previous[-1]
+
+
+def word_error_rate(reference: str, hypothesis: str) -> float:
+    reference_tokens = _tokens(reference)
+    if not reference_tokens:
+        raise ValueError("reference text must contain at least one token")
+    return _edit_distance(reference_tokens, _tokens(hypothesis)) / len(reference_tokens)
+
+
+def cosine_similarity(reference: Iterable[float], candidate: Iterable[float]) -> float:
+    left = [float(value) for value in reference]
+    right = [float(value) for value in candidate]
+    if not left or len(left) != len(right):
+        raise ValueError("speaker embeddings must be non-empty and have equal dimensions")
+    left_norm = math.sqrt(sum(value * value for value in left))
+    right_norm = math.sqrt(sum(value * value for value in right))
+    if left_norm == 0 or right_norm == 0:
+        raise ValueError("speaker embeddings must have non-zero norm")
+    return sum(a * b for a, b in zip(left, right)) / (left_norm * right_norm)
+
+
+def _percentile(values: list[float], probability: float) -> float:
+    if not values:
+        raise ValueError("cannot compute a percentile from no values")
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * probability
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    weight = position - lower
+    return ordered[lower] * (1 - weight) + ordered[upper] * weight
+
+
+def bootstrap_mean_interval(values: list[float], *, seed: int, iterations: int = 2000) -> dict[str, float] | None:
+    if not values:
+        return None
+    if len(values) == 1:
+        return {"low": values[0], "high": values[0], "confidence": 0.95}
+    generator = random.Random(seed)
+    samples = [mean(generator.choices(values, k=len(values))) for _ in range(iterations)]
+    return {
+        "low": _percentile(samples, 0.025),
+        "high": _percentile(samples, 0.975),
+        "confidence": 0.95,
+    }
+
+
+def _number(row: dict[str, Any], name: str) -> float | None:
+    value = row.get(name)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        raise ValueError(f"{name} must be a finite number when present")
+    return float(value)
+
+
+def _metric_summary(values: list[float], *, seed: int) -> dict[str, Any] | None:
+    if not values:
+        return None
+    return {
+        "count": len(values),
+        "mean": mean(values),
+        "median": median(values),
+        "min": min(values),
+        "max": max(values),
+        "mean_95pct_bootstrap_ci": bootstrap_mean_interval(values, seed=seed),
+    }
+
+
+def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 20260812) -> dict[str, Any]:
+    if not rows:
+        raise ValueError("at least one objective observation is required")
+
+    required = {"sample_id", "candidate_id", "prompt_id", "requested_text", "valid"}
+    seen: set[str] = set()
+    per_candidate: dict[str, dict[str, Any]] = {}
+    per_sample: list[dict[str, Any]] = []
+
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ValueError(f"observation {index} must be an object")
+        missing = required - row.keys()
+        if missing:
+            raise ValueError(f"observation {index} is missing: {', '.join(sorted(missing))}")
+        sample_id = str(row["sample_id"]).strip()
+        candidate_id = str(row["candidate_id"]).strip()
+        prompt_id = str(row["prompt_id"]).strip()
+        requested_text = str(row["requested_text"]).strip()
+        if not sample_id or not candidate_id or not prompt_id or not requested_text:
+            raise ValueError(f"observation {index} contains an empty identifier or requested_text")
+        if sample_id in seen:
+            raise ValueError(f"duplicate sample_id: {sample_id}")
+        seen.add(sample_id)
+        if not isinstance(row["valid"], bool):
+            raise ValueError(f"observation {index} valid must be a boolean")
+
+        candidate = per_candidate.setdefault(
+            candidate_id,
+            {
+                "total": 0,
+                "valid": 0,
+                "word_error_rate": [],
+                "speaker_embedding_similarity": [],
+                "real_time_factor": [],
+                "generation_seconds": [],
+                "audio_duration_seconds": [],
+                "peak_memory_bytes": [],
+            },
+        )
+        candidate["total"] += 1
+        sample_result: dict[str, Any] = {
+            "sample_id": sample_id,
+            "candidate_id": candidate_id,
+            "prompt_id": prompt_id,
+            "valid": row["valid"],
+            "metrics": {},
+            "evidence": row.get("evidence", {}),
+        }
+        evidence = row.get("evidence", {})
+        if not isinstance(evidence, dict):
+            raise ValueError(f"observation {index} evidence must be an object")
+
+        def require_evidence(kind: str) -> None:
+            record = evidence.get(kind)
+            if not isinstance(record, dict):
+                raise ValueError(f"observation {index} requires evidence.{kind}")
+            if not isinstance(record.get("extractor"), str) or not record["extractor"].strip():
+                raise ValueError(f"observation {index} evidence.{kind}.extractor must be non-empty")
+            if not isinstance(record.get("revision"), str) or not record["revision"].strip():
+                raise ValueError(f"observation {index} evidence.{kind}.revision must be non-empty")
+        if row["valid"]:
+            candidate["valid"] += 1
+
+        hypothesis = row.get("hypothesis_text")
+        if hypothesis is not None:
+            if not isinstance(hypothesis, str):
+                raise ValueError(f"observation {index} hypothesis_text must be a string")
+            require_evidence("asr")
+            value = word_error_rate(requested_text, hypothesis)
+            sample_result["metrics"]["asr_word_error_rate"] = value
+            candidate["word_error_rate"].append(value)
+
+        reference_embedding = row.get("reference_speaker_embedding")
+        candidate_embedding = row.get("speaker_embedding")
+        if reference_embedding is not None or candidate_embedding is not None:
+            if not isinstance(reference_embedding, list) or not isinstance(candidate_embedding, list):
+                raise ValueError(f"observation {index} must provide both speaker embeddings as arrays")
+            require_evidence("speaker_encoder")
+            value = cosine_similarity(reference_embedding, candidate_embedding)
+            sample_result["metrics"]["speaker_embedding_similarity"] = value
+            candidate["speaker_embedding_similarity"].append(value)
+
+        generation_seconds = _number(row, "generation_seconds")
+        audio_duration_seconds = _number(row, "audio_duration_seconds")
+        peak_memory_bytes = _number(row, "peak_memory_bytes")
+        if generation_seconds is not None or audio_duration_seconds is not None or peak_memory_bytes is not None:
+            require_evidence("runtime")
+        if generation_seconds is not None:
+            if generation_seconds < 0:
+                raise ValueError(f"observation {index} generation_seconds must be non-negative")
+            sample_result["metrics"]["generation_seconds"] = generation_seconds
+            candidate["generation_seconds"].append(generation_seconds)
+        if audio_duration_seconds is not None:
+            if audio_duration_seconds <= 0:
+                raise ValueError(f"observation {index} audio_duration_seconds must be positive")
+            sample_result["metrics"]["audio_duration_seconds"] = audio_duration_seconds
+            candidate["audio_duration_seconds"].append(audio_duration_seconds)
+        if generation_seconds is not None and audio_duration_seconds is not None:
+            value = generation_seconds / audio_duration_seconds
+            sample_result["metrics"]["real_time_factor"] = value
+            candidate["real_time_factor"].append(value)
+        if peak_memory_bytes is not None:
+            if peak_memory_bytes < 0:
+                raise ValueError(f"observation {index} peak_memory_bytes must be non-negative")
+            sample_result["metrics"]["peak_memory_bytes"] = peak_memory_bytes
+            candidate["peak_memory_bytes"].append(peak_memory_bytes)
+        per_sample.append(sample_result)
+
+    candidates: list[dict[str, Any]] = []
+    for candidate_index, (candidate_id, values) in enumerate(sorted(per_candidate.items())):
+        candidate_seed = seed + candidate_index * 1000
+        total = int(values["total"])
+        valid = int(values["valid"])
+        candidates.append(
+            {
+                "candidate_id": candidate_id,
+                "sample_count": total,
+                "valid_sample_count": valid,
+                "invalid_output_rate": (total - valid) / total,
+                "asr_word_error_rate": _metric_summary(values["word_error_rate"], seed=candidate_seed + 1),
+                "speaker_embedding_similarity": _metric_summary(
+                    values["speaker_embedding_similarity"], seed=candidate_seed + 2
+                ),
+                "real_time_factor": _metric_summary(values["real_time_factor"], seed=candidate_seed + 3),
+                "generation_seconds": _metric_summary(values["generation_seconds"], seed=candidate_seed + 4),
+                "audio_duration_seconds": _metric_summary(
+                    values["audio_duration_seconds"], seed=candidate_seed + 5
+                ),
+                "peak_memory_bytes": _metric_summary(values["peak_memory_bytes"], seed=candidate_seed + 6),
+            }
+        )
+
+    return {
+        "schema_version": "1.0.0",
+        "evaluation_scope": "objective_proxies_from_versioned_external_observations",
+        "proves_perceptual_quality": False,
+        "bootstrap_seed": seed,
+        "candidates": candidates,
+        "samples": per_sample,
+    }

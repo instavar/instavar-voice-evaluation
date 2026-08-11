@@ -11,6 +11,9 @@ The shared layer provides:
 - a frozen Singapore English prompt and listening-criteria pack;
 - deterministic PCM WAV diagnostics;
 - deterministic blind-review labels and a separately stored reveal mapping; and
+- objective proxy scoring from versioned ASR, speaker-encoder, and runtime observations;
+- criterion-level listening aggregation with bootstrap intervals and interval agreement; and
+- a fail-closed lifecycle runner for model-specific preflight, training, inference, evaluation, and packaging;
 - examples and unit tests for every contract.
 
 ## Validate contracts
@@ -28,6 +31,7 @@ instavar-voice-eval validate capability examples/capability-manifest.json
 instavar-voice-eval validate experiment examples/experiment-manifest.json
 instavar-voice-eval validate evaluation examples/evaluation-report.json
 instavar-voice-eval validate package examples/artifact-package.json
+instavar-voice-eval validate historical examples/historical-run.json
 ```
 
 Validate a companion repository after it adds `instavar-voice-capabilities.json`:
@@ -37,6 +41,8 @@ instavar-voice-eval validate-repository /path/to/companion-repository
 ```
 
 The checked-in JSON Schemas provide editor and ecosystem interoperability. The Python validator adds semantic checks that are awkward or misleading in schema alone, including evidence requirements for supported capabilities, unique runtime identifiers, distinct corpus split hashes, baseline presence, and the ban on a universal composite evaluation score.
+
+Historical runs often predate the strict experiment and package contracts. Import them with the historical-run contract instead of inventing missing hashes. The record preserves stage-specific evidence and names the exact blockers that prevent migration into a complete experiment manifest or deployable artifact package.
 
 ## Probe generated audio
 
@@ -84,10 +90,48 @@ instavar-voice-eval build-listening-pack samples.json \
 
 The review file contains no candidate identifiers. Preserve the reveal mapping separately and do not open it until all ratings are recorded.
 
+After reviewers finish, aggregate criterion-level results with the matching review and reveal files:
+
+```bash
+instavar-voice-eval aggregate-listening listening-review.json reveal-mapping.json ratings.json \
+  --output listening-results.json \
+  --seed 20260812
+```
+
+The output keeps every criterion separate, reports deterministic bootstrap intervals, and calculates interval Krippendorff alpha where multiple raters overlap. Agreement measures rating consistency, not correctness or perceptual truth.
+
+## Score objective observations
+
+The core package does not bundle a preferred ASR model or speaker encoder. Instead, each sample records the extractor name and revision that produced its transcript, speaker embedding, runtime, and memory observations. Score those versioned observations with:
+
+```bash
+instavar-voice-eval score-objective examples/objective-observations.json \
+  --output objective-results.json \
+  --seed 20260812
+```
+
+The result reports ASR word error rate, speaker-embedding cosine similarity, invalid-output rate, real-time factor, generation time, audio duration, and peak memory independently. These are objective proxies. They do not establish accent fidelity, cadence, naturalness, or listening fatigue.
+
+## Run the common lifecycle
+
+A backend specification supplies argument arrays for five model-specific stages: preflight, train, infer, evaluate, and package. Commands are executed directly without a shell. Every stage must return success, write its stage result, and produce all declared artifacts before the next stage runs.
+
+Validate and exercise the included lightweight backend:
+
+```bash
+instavar-voice-eval validate-backend examples/fake-backend.json
+instavar-voice-eval run-lifecycle \
+  examples/fake-backend.json \
+  examples/experiment-manifest.json \
+  --work-dir /tmp/instavar-voice-fake-lifecycle
+```
+
+The lifecycle report records commands, exit codes, logs, artifact hashes, and the fail-closed stage boundary. A passed fake lifecycle proves orchestration and evidence generation only. It does not prove that a real model trains, synthesizes correct speech, or sounds good.
+
 ## Test
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-These tests validate contract behavior and deterministic artifact generation. They do not run model training, inference, ASR, speaker embeddings, or human listening.
+These tests validate contract behavior, deterministic artifact generation, proxy calculations, listening aggregation, and a complete lightweight lifecycle. They do not run heavyweight model training, real ASR, real speaker encoders, or human listening.

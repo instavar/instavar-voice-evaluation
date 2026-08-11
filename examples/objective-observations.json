@@ -1,0 +1,38 @@
+[
+  {
+    "sample_id": "baseline-p001",
+    "candidate_id": "base-model",
+    "prompt_id": "p001",
+    "requested_text": "Please send the revised schedule by Friday afternoon.",
+    "hypothesis_text": "Please send the revised schedule by Friday afternoon.",
+    "valid": true,
+    "audio_duration_seconds": 3.1,
+    "generation_seconds": 1.55,
+    "peak_memory_bytes": 4294967296,
+    "reference_speaker_embedding": [0.9, 0.1, 0.2],
+    "speaker_embedding": [0.8, 0.2, 0.2],
+    "evidence": {
+      "asr": { "extractor": "example-asr", "revision": "replace-with-real-revision" },
+      "speaker_encoder": { "extractor": "example-speaker-encoder", "revision": "replace-with-real-revision" },
+      "runtime": { "extractor": "example-runtime-probe", "revision": "replace-with-real-revision" }
+    }
+  },
+  {
+    "sample_id": "adapter-p001",
+    "candidate_id": "selected-adapter",
+    "prompt_id": "p001",
+    "requested_text": "Please send the revised schedule by Friday afternoon.",
+    "hypothesis_text": "Please send the revised schedule by Friday afternoon.",
+    "valid": true,
+    "audio_duration_seconds": 3.0,
+    "generation_seconds": 1.2,
+    "peak_memory_bytes": 4831838208,
+    "reference_speaker_embedding": [0.9, 0.1, 0.2],
+    "speaker_embedding": [0.88, 0.12, 0.2],
+    "evidence": {
+      "asr": { "extractor": "example-asr", "revision": "replace-with-real-revision" },
+      "speaker_encoder": { "extractor": "example-speaker-encoder", "revision": "replace-with-real-revision" },
+      "runtime": { "extractor": "example-runtime-probe", "revision": "replace-with-real-revision" }
+    }
+  }
+]
