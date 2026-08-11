@@ -46,6 +46,21 @@ instavar-voice-eval probe-audio output.wav --output evaluation/output.probe.json
 
 The deterministic probe reports duration, sample rate, channels, sample width, peak, RMS, DC offset, silence fraction, and clipping fraction for uncompressed PCM WAV files. It does not measure intelligibility, speaker identity, accent fidelity, cadence, or naturalness.
 
+## Audit a training corpus
+
+Audit file presence, non-empty text, duplicate audio, and parent or recording leakage before a training preflight:
+
+```bash
+instavar-voice-eval audit-corpus \
+  --split train=data/train.jsonl \
+  --split validation=data/validation.jsonl \
+  --split test=data/test.jsonl \
+  --group-field recording_id \
+  --output evaluation/corpus-audit.json
+```
+
+The audit hashes each manifest and fails if a recording group crosses splits. It checks that referenced audio files exist, but it does not decode every audio format or prove that the transcript matches the recording.
+
 ## Build a blind listening pack
 
 Prepare a JSON array containing `sample_id`, `candidate_id`, `prompt_id`, and `audio_path`, plus a JSON array of criterion names. Then run:

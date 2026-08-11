@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .audio_probe import probe_wav
 from .contracts import VALIDATORS, validate_document
+from .corpus import audit_corpus
 from .listening import build_blind_pack
 
 
@@ -46,6 +47,18 @@ def build_parser() -> argparse.ArgumentParser:
     repository = commands.add_parser("validate-repository", help="validate instavar-voice-capabilities.json in a repository")
     repository.add_argument("root", type=Path)
 
+    audit = commands.add_parser("audit-corpus", help="audit train, validation, and test JSONL manifests")
+    audit.add_argument(
+        "--split",
+        action="append",
+        required=True,
+        help="split declaration in the form train=/path/to/train.jsonl",
+    )
+    audit.add_argument("--audio-field", default="audio")
+    audit.add_argument("--text-field", default="text")
+    audit.add_argument("--group-field", default="")
+    audit.add_argument("--output", type=Path)
+
     probe = commands.add_parser("probe-audio", help="record deterministic diagnostics for a PCM WAV file")
     probe.add_argument("wav", type=Path)
     probe.add_argument("--output", type=Path)
@@ -65,6 +78,28 @@ def main(argv: list[str] | None = None) -> int:
         return _validate(args.kind, args.path)
     if args.command == "validate-repository":
         return _validate("capability", args.root / "instavar-voice-capabilities.json")
+    if args.command == "audit-corpus":
+        splits: dict[str, Path] = {}
+        for declaration in args.split:
+            if "=" not in declaration:
+                print(f"invalid --split declaration: {declaration}", file=sys.stderr)
+                return 2
+            name, raw_path = declaration.split("=", 1)
+            if name in splits or not name or not raw_path:
+                print(f"invalid or duplicate --split declaration: {declaration}", file=sys.stderr)
+                return 2
+            splits[name] = Path(raw_path)
+        result = audit_corpus(
+            splits,
+            audio_field=args.audio_field,
+            text_field=args.text_field,
+            group_field=args.group_field or None,
+        )
+        if args.output:
+            _write_json(args.output, result)
+        else:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result["status"] == "passed" else 1
     if args.command == "probe-audio":
         try:
             result = probe_wav(args.wav)
