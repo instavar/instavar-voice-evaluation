@@ -46,6 +46,15 @@ instavar-voice-eval probe-audio output.wav --output evaluation/output.probe.json
 
 The deterministic probe reports duration, sample rate, channels, sample width, peak, RMS, DC offset, silence fraction, and clipping fraction for uncompressed PCM WAV files. It does not measure intelligibility, speaker identity, accent fidelity, cadence, or naturalness.
 
+Compare the diagnostics from a reference runtime and a candidate runtime:
+
+```bash
+instavar-voice-eval compare-audio pytorch.wav alternative-runtime.wav \
+  --output evaluation/runtime-comparison.json
+```
+
+The comparison records format matches and candidate-minus-reference deltas. It deliberately emits `proves_runtime_equivalence: false`: matching container and signal-level diagnostics cannot establish text, speaker, accent, cadence, or perceptual equivalence.
+
 ## Audit a training corpus
 
 Audit file presence, non-empty text, duplicate audio, and parent or recording leakage before a training preflight:

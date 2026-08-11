@@ -59,3 +59,32 @@ def probe_wav(path: Path, *, silence_threshold: float = 0.01, clipping_threshold
         "silence_fraction": silence_fraction,
         "clipping_fraction": clipping_fraction,
     }
+
+
+def compare_wav_probes(reference: Path, candidate: Path) -> dict[str, object]:
+    """Compare deterministic WAV diagnostics without claiming runtime equivalence."""
+    reference_probe = probe_wav(reference)
+    candidate_probe = probe_wav(candidate)
+    delta_fields = (
+        "duration_seconds",
+        "peak",
+        "rms",
+        "dc_offset",
+        "silence_fraction",
+        "clipping_fraction",
+    )
+    deltas = {
+        field: float(candidate_probe[field]) - float(reference_probe[field])
+        for field in delta_fields
+    }
+    return {
+        "comparison_scope": "deterministic_container_and_level_diagnostics_only",
+        "proves_runtime_equivalence": False,
+        "reference": reference_probe,
+        "candidate": candidate_probe,
+        "format_match": {
+            field: candidate_probe[field] == reference_probe[field]
+            for field in ("sample_rate_hz", "channels", "sample_width_bytes")
+        },
+        "candidate_minus_reference": deltas,
+    }

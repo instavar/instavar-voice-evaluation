@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from .audio_probe import probe_wav
+from .audio_probe import compare_wav_probes, probe_wav
 from .contracts import VALIDATORS, validate_document
 from .corpus import audit_corpus
 from .listening import build_blind_pack
@@ -63,6 +63,14 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument("wav", type=Path)
     probe.add_argument("--output", type=Path)
 
+    compare = commands.add_parser(
+        "compare-audio",
+        help="compare deterministic diagnostics for reference and candidate PCM WAV files",
+    )
+    compare.add_argument("reference", type=Path)
+    compare.add_argument("candidate", type=Path)
+    compare.add_argument("--output", type=Path)
+
     blind = commands.add_parser("build-listening-pack", help="create blind review and reveal mapping documents")
     blind.add_argument("samples", type=Path, help="JSON array of sample_id, candidate_id, prompt_id, and audio_path rows")
     blind.add_argument("--criteria", type=Path, required=True, help="JSON array of criterion names")
@@ -103,6 +111,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "probe-audio":
         try:
             result = probe_wav(args.wav)
+        except (OSError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        if args.output:
+            _write_json(args.output, result)
+        else:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    if args.command == "compare-audio":
+        try:
+            result = compare_wav_probes(args.reference, args.candidate)
         except (OSError, ValueError) as error:
             print(error, file=sys.stderr)
             return 2
