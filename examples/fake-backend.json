@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "backend_id": "instavar-fake-backend",
+  "commands": {
+    "preflight": ["{python}", "-m", "instavar_voice_lab.fake_backend", "preflight"],
+    "train": ["{python}", "-m", "instavar_voice_lab.fake_backend", "train"],
+    "infer": ["{python}", "-m", "instavar_voice_lab.fake_backend", "infer"],
+    "evaluate": ["{python}", "-m", "instavar_voice_lab.fake_backend", "evaluate"],
+    "package": ["{python}", "-m", "instavar_voice_lab.fake_backend", "package"]
+  },
+  "expected_artifacts": {
+    "preflight": ["preflight/preflight.json"],
+    "train": ["train/checkpoint.bin"],
+    "infer": ["infer/candidate.wav"],
+    "evaluate": ["evaluate/objective-observations.json"],
+    "package": ["package/adapter-package.bin"]
+  }
+}
