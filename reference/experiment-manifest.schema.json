@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/instavar/instavar-voice-evaluation/main/reference/experiment-manifest.schema.json",
+  "title": "Instavar Voice adaptation experiment manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "experiment_id",
+    "objective",
+    "intended_use",
+    "rights",
+    "corpus",
+    "backend",
+    "adaptation_mode",
+    "hardware",
+    "preflight",
+    "checkpoints",
+    "evaluation_suite",
+    "status",
+    "promotion_rationale"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "experiment_id": { "type": "string", "minLength": 1 },
+    "objective": { "type": "string", "minLength": 1 },
+    "intended_use": { "type": "string", "minLength": 1 },
+    "adaptation_mode": {
+      "enum": ["zero_shot", "lora", "full_sft", "partial_sft", "prompt_adapter"]
+    },
+    "hardware": { "type": "string", "minLength": 1 },
+    "status": {
+      "enum": [
+        "planned",
+        "preflight_passed",
+        "trained_unreviewed",
+        "evaluation_limited",
+        "evaluation_failed",
+        "validated",
+        "promoted",
+        "blocked"
+      ]
+    },
+    "promotion_rationale": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": true
+}

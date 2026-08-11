@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/instavar/instavar-voice-evaluation/main/reference/artifact-package.schema.json",
+  "title": "Instavar Voice promoted artifact package manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "package_id",
+    "base_model",
+    "artifact",
+    "code_revision",
+    "inference_configuration",
+    "rights_note",
+    "known_failure_modes",
+    "evaluation_report",
+    "smoke_command"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "package_id": { "type": "string", "minLength": 1 },
+    "artifact": {
+      "type": "object",
+      "required": ["path", "sha256", "bytes", "kind"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "kind": { "enum": ["adapter", "merged_model", "checkpoint"] }
+      }
+    }
+  },
+  "additionalProperties": true
+}

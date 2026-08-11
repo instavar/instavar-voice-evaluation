@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0.0",
+  "experiment_id": "example-20260812-001",
+  "objective": "Test whether the adapter improves target-profile closeness without reducing intelligibility.",
+  "intended_use": "Bounded local research evaluation",
+  "rights": {
+    "model": "Pinned model terms reviewed for local research.",
+    "dataset": "Dataset provenance recorded in the private corpus ledger.",
+    "consent": "Speaker consent recorded for this adaptation experiment.",
+    "distribution": "No weights or audio are approved for distribution."
+  },
+  "corpus": {
+    "id": "example-corpus-v1",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "split_hashes": {
+      "train": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "validation": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "test": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  },
+  "backend": {
+    "name": "example-lora",
+    "upstream_revision": "2222222222222222222222222222222222222222",
+    "instavar_revision": "3333333333333333333333333333333333333333"
+  },
+  "adaptation_mode": "lora",
+  "hardware": "Example 24 GB CUDA host",
+  "preflight": {
+    "status": "passed",
+    "criteria": [
+      "finite loss",
+      "checkpoint save",
+      "fresh-process reload",
+      "valid generated sample"
+    ],
+    "artifacts": ["artifacts/preflight.json"]
+  },
+  "checkpoints": [
+    {
+      "id": "step-1000",
+      "path": "checkpoints/step-1000",
+      "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "status": "candidate"
+    }
+  ],
+  "evaluation_suite": {
+    "id": "instavar-singapore-english-v1",
+    "revision": "4444444444444444444444444444444444444444"
+  },
+  "status": "trained_unreviewed",
+  "promotion_rationale": "Training completed, but blinded listening has not run."
+}

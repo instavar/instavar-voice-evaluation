@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.0.0",
+  "repository": {
+    "slug": "instavar/example-tts-adapter",
+    "url": "https://github.com/instavar/example-tts-adapter",
+    "evidence_revision": "1111111111111111111111111111111111111111"
+  },
+  "model": {
+    "family": "Example TTS",
+    "upstream_repository": "example/example-tts"
+  },
+  "adaptation": {
+    "lora": {
+      "status": "supported",
+      "evidence": [
+        {
+          "level": "validated",
+          "ref": "reports/example-run.md",
+          "claim": "A real-model LoRA run saved, reloaded, and generated a valid held-out sample."
+        }
+      ]
+    },
+    "full_sft": {
+      "status": "unsupported",
+      "evidence": [],
+      "notes": "The companion intentionally exposes LoRA only."
+    }
+  },
+  "runtimes": [
+    {
+      "id": "pytorch",
+      "status": "supported",
+      "artifact_mode": "adapter",
+      "streaming": false,
+      "evidence": [
+        {
+          "level": "validated",
+          "ref": "reports/example-run.md",
+          "claim": "A fresh process loaded the adapter and produced PCM audio."
+        }
+      ]
+    }
+  ],
+  "evaluation": {
+    "prompt_pack": {
+      "id": "instavar-singapore-english",
+      "version": "1.0.0",
+      "sha256": "79491bec271c0aa1ea1b7dd92dd976476959f1607859a67451652f7c12e56a45"
+    },
+    "objective_metrics": ["invalid_output_rate", "real_time_factor"],
+    "listening_criteria": ["speaker_identity", "cadence_variation"]
+  },
+  "rights": {
+    "code": "Record the pinned code license before use.",
+    "weights": "Record the pinned model-weight terms before use.",
+    "dataset": "Record dataset provenance and consent before training.",
+    "generated_output": "Review generated-output terms for the intended use."
+  },
+  "known_gaps": ["No alternative runtime has passed adapter-aware conformance."]
+}

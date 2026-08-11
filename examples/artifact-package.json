@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0.0",
+  "package_id": "example-adapter-v1",
+  "base_model": "example/example-tts@2222222222222222222222222222222222222222",
+  "artifact": {
+    "path": "artifacts/example-adapter.safetensors",
+    "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "bytes": 1024,
+    "kind": "adapter"
+  },
+  "code_revision": "3333333333333333333333333333333333333333",
+  "inference_configuration": {
+    "runtime": "pytorch",
+    "adapter_scale": 0.3,
+    "sample_rate_hz": 24000
+  },
+  "rights_note": "Local research only until every rights surface is re-attested.",
+  "known_failure_modes": ["Long-form cadence has not passed blinded review."],
+  "evaluation_report": "evaluation/example-eval-20260812-001.json",
+  "smoke_command": "python inference.py --adapter artifacts/example-adapter.safetensors --text 'Verification sentence.'"
+}

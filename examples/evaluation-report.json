@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0.0",
+  "evaluation_id": "example-eval-20260812-001",
+  "experiment_id": "example-20260812-001",
+  "prompt_pack": {
+    "id": "instavar-singapore-english",
+    "version": "1.0.0",
+    "sha256": "79491bec271c0aa1ea1b7dd92dd976476959f1607859a67451652f7c12e56a45"
+  },
+  "candidates": [
+    {
+      "id": "base",
+      "artifact_ref": "models/base",
+      "revision": "2222222222222222222222222222222222222222",
+      "role": "baseline"
+    },
+    {
+      "id": "step-1000",
+      "artifact_ref": "checkpoints/step-1000",
+      "revision": "3333333333333333333333333333333333333333",
+      "role": "candidate"
+    }
+  ],
+  "objective_results": [
+    {
+      "candidate_id": "step-1000",
+      "metric": "invalid_output_rate",
+      "value": 0.0,
+      "scope": "Three seeds across seven frozen prompts",
+      "evidence_ref": "evaluation/objective-results.json"
+    }
+  ],
+  "listening": {
+    "status": "limited",
+    "blind": true,
+    "criteria": ["speaker_identity", "cadence_variation"],
+    "review_export": "evaluation/listening-review.json",
+    "reveal_mapping": "evaluation/reveal-mapping.json"
+  },
+  "verdict": "The engineering path is valid, while perceptual improvement remains unestablished."
+}

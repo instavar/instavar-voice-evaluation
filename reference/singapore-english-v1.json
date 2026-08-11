@@ -1,0 +1,79 @@
+{
+  "id": "instavar-singapore-english",
+  "version": "1.0.0",
+  "locale": "en-SG",
+  "purpose": "Compare identity, Singapore English accent, pronunciation, cadence, long-form stability, and runtime behavior without treating conspicuous Singlish vocabulary as an accent proxy.",
+  "reference_durations_seconds": [10, 30, 75],
+  "generation": {
+    "seeds_per_candidate": 3,
+    "require_same_transcripts": true,
+    "require_frozen_generation_settings": true
+  },
+  "prompts": [
+    {
+      "id": "neutral-brief",
+      "category": "neutral_singapore_english",
+      "text": "I reviewed the notes this morning and found three details that need a little more attention. None of them is urgent, but I would like us to settle them before Friday."
+    },
+    {
+      "id": "local-context",
+      "category": "natural_local_context",
+      "text": "I thought the meeting was at the office, but Marcus said everyone was already heading to Tanjong Pagar. I felt a bit paiseh, so I sent a message and took the next train."
+    },
+    {
+      "id": "names-numbers",
+      "category": "pronunciation",
+      "text": "Please send the revised quotation to Sze Min at Block 18, Jalan Membina, by 4:30 p.m. on 12 August. The total is S$1,248.60, including GST."
+    },
+    {
+      "id": "emotional-neutral",
+      "category": "emotion_control",
+      "instruction": "Read with calm confidence.",
+      "text": "We finished the first version, checked the result, and now we know what to improve."
+    },
+    {
+      "id": "emotional-concerned",
+      "category": "emotion_control",
+      "instruction": "Read with restrained concern.",
+      "text": "We finished the first version, checked the result, and now we know what to improve."
+    },
+    {
+      "id": "cadence-two-minute",
+      "category": "long_form_cadence",
+      "text": "On Monday morning, the studio was unusually quiet. The first render had finished overnight, but nobody wanted to judge it from a single short clip. We played the opening again, then skipped to the middle, and finally listened to the last minute without looking at the waveform. Some sentences sounded natural on their own. Over time, however, the same rise and fall kept returning. Questions did not always sound like questions, short asides received too much emphasis, and longer explanations settled into a rhythm that made every paragraph feel similar. We changed the passage rather than adding local words for effect. It included a direct instruction, a list of three items, a date, a name, and one moment of hesitation. The goal was not to make the speaker sound more Singaporean by writing stereotypes into the script. The goal was to hear whether the voice preserved the speaker's ordinary timing, stress, vowels, and phrasing when the content changed. After the second round, we saved every output, hid the model names, and asked the reviewers to score one property at a time. That made the disagreement useful. One sample was clearer, another sounded closer to the speaker, and a third varied its cadence more naturally over the full passage. None of those observations, by itself, proved that one model was best. Together, they showed what the next controlled test needed to isolate."
+    },
+    {
+      "id": "structured-long-form",
+      "category": "long_form_structure",
+      "text": "Before we decide, consider three questions. First, does the voice remain recognisable when the sentence becomes technical? Second, can it move between a short answer and a longer explanation without repeating the same rhythm? Third, what happens when the text includes parentheses, dates, and a list? The answer may differ by checkpoint. A lower validation loss can help us find candidates, but it cannot tell us whether a listener will find the voice natural after two minutes. That is why the final review uses the same text, hidden labels, and a separate reveal mapping."
+    }
+  ],
+  "objective_metrics": [
+    "asr_word_error_rate",
+    "speaker_embedding_similarity",
+    "invalid_output_rate",
+    "duration_seconds",
+    "sample_rate_hz",
+    "silence_fraction",
+    "clipping_fraction",
+    "real_time_factor",
+    "peak_memory_bytes"
+  ],
+  "listening_criteria": [
+    "speaker_identity",
+    "singapore_english_accent_fidelity",
+    "lexical_pronunciation",
+    "cadence_variation",
+    "long_form_monotony",
+    "naturalness",
+    "emotion_and_instruction_obedience",
+    "artifact_severity",
+    "listening_fatigue"
+  ],
+  "measurement_limits": [
+    "ASR error rate does not measure accent fidelity.",
+    "Speaker embeddings do not measure cadence or long-form fatigue.",
+    "Repository benchmarks do not replace a pinned local reproduction.",
+    "No universal composite score is defined because the criteria measure different properties."
+  ]
+}

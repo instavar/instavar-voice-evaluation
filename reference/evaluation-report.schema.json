@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/instavar/instavar-voice-evaluation/main/reference/evaluation-report.schema.json",
+  "title": "Instavar Voice evaluation report",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "evaluation_id",
+    "experiment_id",
+    "prompt_pack",
+    "candidates",
+    "objective_results",
+    "listening",
+    "verdict"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "evaluation_id": { "type": "string", "minLength": 1 },
+    "experiment_id": { "type": "string", "minLength": 1 },
+    "candidates": { "type": "array", "minItems": 2 },
+    "objective_results": { "type": "array" },
+    "listening": { "type": "object" },
+    "verdict": { "type": "string", "minLength": 1 }
+  },
+  "not": { "required": ["composite_score"] },
+  "additionalProperties": true
+}

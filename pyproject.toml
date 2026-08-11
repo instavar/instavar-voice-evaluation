@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "instavar-voice-evaluation"
+version = "0.1.0"
+description = "Evidence contracts and evaluation utilities for open-source TTS adaptation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Instavar" }]
+dependencies = []
+
+[project.scripts]
+instavar-voice-eval = "instavar_voice_lab.cli:main"
+
+[tool.setuptools]
+packages = ["instavar_voice_lab"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
