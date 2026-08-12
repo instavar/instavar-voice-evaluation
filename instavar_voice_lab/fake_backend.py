@@ -29,11 +29,17 @@ def run(stage: str) -> int:
     work_dir = Path(os.environ["INSTAVAR_VOICE_WORK_DIR"])
     result_path = Path(os.environ["INSTAVAR_VOICE_STAGE_RESULT"])
     if stage == "preflight":
-        _write_json(work_dir / "preflight" / "preflight.json", {"finite_loss": True, "reload": True})
+        preflight = work_dir / "preflight" / "preflight.json"
+        if os.environ.get("INSTAVAR_FAKE_EMPTY_PREFLIGHT") == "1":
+            preflight.write_bytes(b"")
+        else:
+            _write_json(preflight, {"finite_loss": True, "reload": True})
     elif stage == "train":
         checkpoint = work_dir / "train" / "checkpoint.bin"
         checkpoint.write_bytes(b"instavar-voice-fake-checkpoint\n")
     elif stage == "infer":
+        if os.environ.get("INSTAVAR_FAKE_MUTATE_CHECKPOINT") == "1":
+            (work_dir / "train" / "checkpoint.bin").write_bytes(b"mutated after hashing\n")
         _write_wav(work_dir / "infer" / "candidate.wav")
     elif stage == "evaluate":
         _write_json(

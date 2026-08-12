@@ -206,8 +206,12 @@ Backend specification 1.1 requires a positive timeout for every stage. The
 runner also requires a new or empty non-symlink work directory, validates the
 complete experiment manifest before invoking a backend, rejects absolute or
 parent-traversing artifact paths, and refuses symlinked stage results or
-artifacts. These checks prevent stale files or external paths from satisfying a
-later run. Use a unique work directory for every experiment attempt rather than
+artifacts. Declared artifacts must be non-empty, live under the stage that owns
+them, and must not reuse runner-owned result or log paths. Before accepting each
+later stage, the runner rehashes all earlier evidence and fails if a checkpoint,
+result, or other artifact changed after it was recorded. These checks prevent
+stale, cross-stage, empty, mutated, or external files from satisfying a later
+run. Use a unique work directory for every experiment attempt rather than
 reusing or manually cleaning an old run directory.
 
 Validate and exercise the included lightweight backend:

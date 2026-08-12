@@ -71,6 +71,42 @@ class LifecycleTests(unittest.TestCase):
         errors = validate_backend_spec(spec)
         self.assertTrue(any("unsafe path" in error for error in errors))
 
+    def test_backend_spec_rejects_cross_stage_and_runner_owned_artifacts(self) -> None:
+        spec = json.loads((ROOT / "examples" / "fake-backend.json").read_text())
+        spec["expected_artifacts"]["train"] = ["infer/candidate.wav", "train/stdout.log"]
+        errors = validate_backend_spec(spec)
+        self.assertTrue(any("owned by the train stage" in error for error in errors))
+        self.assertTrue(any("runner-owned path" in error for error in errors))
+
+    def test_empty_artifact_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            spec = json.loads((ROOT / "examples" / "fake-backend.json").read_text())
+            spec["environment"] = {"INSTAVAR_FAKE_EMPTY_PREFLIGHT": "1"}
+            spec_path = Path(temporary) / "empty-artifact-backend.json"
+            spec_path.write_text(json.dumps(spec), encoding="utf-8")
+            result = run_lifecycle(
+                spec_path,
+                ROOT / "examples" / "experiment-manifest.json",
+                Path(temporary) / "work",
+            )
+            self.assertEqual(result["status"], "failed")
+            self.assertIn("must not be empty", result["stages"][0]["error"])
+
+    def test_later_stage_cannot_mutate_hashed_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            spec = json.loads((ROOT / "examples" / "fake-backend.json").read_text())
+            spec["environment"] = {"INSTAVAR_FAKE_MUTATE_CHECKPOINT": "1"}
+            spec_path = Path(temporary) / "mutating-backend.json"
+            spec_path.write_text(json.dumps(spec), encoding="utf-8")
+            result = run_lifecycle(
+                spec_path,
+                ROOT / "examples" / "experiment-manifest.json",
+                Path(temporary) / "work",
+            )
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["stages"][-1]["stage"], "infer")
+            self.assertIn("changed after hashing", result["stages"][-1]["error"])
+
     def test_stage_timeout_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             spec = json.loads((ROOT / "examples" / "fake-backend.json").read_text())

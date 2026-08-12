@@ -61,11 +61,21 @@ def _artifact_record(path: Path, *, root: Path) -> dict[str, Any]:
     resolved_path = path.resolve()
     if not resolved_path.is_relative_to(resolved_root):
         raise ValueError(f"lifecycle artifact escapes the work directory: {path}")
+    size = path.stat().st_size
+    if size == 0:
+        raise ValueError(f"lifecycle artifacts must not be empty: {path}")
     return {
         "path": str(path.relative_to(root)),
         "sha256": _sha256(path),
-        "bytes": path.stat().st_size,
+        "bytes": size,
     }
+
+
+def _verify_artifact_records(records: list[dict[str, Any]], *, root: Path) -> None:
+    for record in records:
+        current = _artifact_record(root / record["path"], root=root)
+        if current != record:
+            raise ValueError(f"lifecycle artifact changed after hashing: {record['path']}")
 
 
 def validate_backend_spec(spec: Any) -> list[str]:
@@ -88,6 +98,7 @@ def validate_backend_spec(spec: Any) -> list[str]:
     if not isinstance(expected, dict):
         errors.append("expected_artifacts must be an object when present")
     else:
+        owned_paths: set[str] = set()
         for stage in STAGES:
             paths = expected.get(stage)
             if not isinstance(paths, list) or not paths or any(not isinstance(path, str) for path in paths):
@@ -99,6 +110,15 @@ def validate_backend_spec(spec: Any) -> list[str]:
                 artifact_path = Path(path_text)
                 if artifact_path.is_absolute() or ".." in artifact_path.parts:
                     errors.append(f"expected_artifacts.{stage} contains an unsafe path: {path_text}")
+                    continue
+                if len(artifact_path.parts) < 2 or artifact_path.parts[0] != stage:
+                    errors.append(f"expected_artifacts.{stage} must contain only paths owned by the {stage} stage: {path_text}")
+                if artifact_path.name in {"stage-result.json", "stdout.log", "stderr.log"}:
+                    errors.append(f"expected_artifacts.{stage} contains a runner-owned path: {path_text}")
+                normalized = artifact_path.as_posix()
+                if normalized in owned_paths:
+                    errors.append(f"expected artifact path is declared more than once: {path_text}")
+                owned_paths.add(normalized)
     environment = spec.get("environment", {})
     if not isinstance(environment, dict):
         errors.append("environment must be an object when present")
@@ -140,6 +160,7 @@ def run_lifecycle(spec_path: Path, experiment_path: Path, work_dir: Path) -> dic
     work_dir.mkdir(parents=True, exist_ok=True)
     lifecycle_started = _now()
     stage_reports: list[dict[str, Any]] = []
+    lifecycle_artifacts: list[dict[str, Any]] = []
     lifecycle_status = "passed"
 
     for stage in STAGES:
@@ -211,11 +232,13 @@ def run_lifecycle(spec_path: Path, experiment_path: Path, work_dir: Path) -> dic
                     raise ValueError("stage result must name the active stage")
                 if stage_result.get("status") != "passed":
                     raise ValueError("stage result status must equal passed")
+                _verify_artifact_records(lifecycle_artifacts, root=work_dir)
                 artifacts = [
                     _artifact_record(work_dir / relative_path, root=work_dir)
                     for relative_path in spec.get("expected_artifacts", {}).get(stage, [])
                 ]
                 artifacts.append(_artifact_record(stage_result_path, root=work_dir))
+                lifecycle_artifacts.extend(artifacts)
                 report["status"] = "passed"
                 report["artifacts"] = artifacts
                 report["backend_result"] = stage_result
