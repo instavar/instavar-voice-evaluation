@@ -10,11 +10,13 @@ The shared layer provides:
 - semantic validation using only the Python standard library;
 - a frozen Singapore English prompt and listening-criteria pack;
 - deterministic PCM WAV diagnostics;
-- deterministic blind-review labels and a separately stored reveal mapping; and
+- deterministic blind-review labels, identity-neutral staged filenames, and a separately stored reveal mapping;
 - objective proxy scoring from versioned ASR, speaker-encoder, and runtime observations;
 - criterion-level listening aggregation with bootstrap intervals and interval agreement; and
 - a fail-closed lifecycle runner for model-specific preflight, training, inference, evaluation, and packaging;
 - a frozen candidate by prompt by seed generation plan with completeness accounting;
+- exact baseline-versus-adapted pairing with extractor-provenance checks and paired bootstrap intervals;
+- lifecycle-stage and matched-comparison declarations for every supported adaptation path;
 - examples and unit tests for every contract.
 
 ## Build and verify a multi-prompt generation plan
@@ -76,6 +78,13 @@ must record zero prompts and seeds. A completed smoke or validation must name
 its report and record the tested prompt and seed counts. This keeps upstream
 runtime availability separate from adapted-artifact evidence.
 
+Capability contract 1.2 adds a seven-stage adaptation lifecycle and a matched
+baseline-versus-adapted comparison declaration. Every supported or experimental
+adaptation must state the evidence boundary for corpus audit, training,
+checkpoint save, fresh-process reload, held-out inference, evaluation, and
+packaging. Missing evidence stays visible as `not_recorded` or `blocked` rather
+than being implied by a repository-level `supported` label.
+
 Historical runs often predate the strict experiment and package contracts. Import them with the historical-run contract instead of inventing missing hashes. The record preserves stage-specific evidence and names the exact blockers that prevent migration into a complete experiment manifest or deployable artifact package.
 
 ## Probe generated audio
@@ -119,10 +128,17 @@ instavar-voice-eval build-listening-pack samples.json \
   --criteria criteria.json \
   --review-output listening-review.json \
   --reveal-output reveal-mapping.json \
+  --stage-root evaluation/listening \
   --seed 20260812
 ```
 
-The review file contains no candidate identifiers. Preserve the reveal mapping separately and do not open it until all ratings are recorded.
+The review file contains no candidate identifiers or source filenames. With
+`--stage-root`, audio is copied to paths such as
+`blind_audio/sample-0001.wav`, and a hash manifest is written beside the staged
+files. Preserve the reveal mapping separately and do not open it until all
+ratings are recorded. File staging does not strip embedded audio metadata, so
+inspect or normalize metadata separately if the source format can carry
+identity-bearing tags.
 
 After reviewers finish, aggregate criterion-level results with the matching review and reveal files:
 
@@ -132,7 +148,7 @@ instavar-voice-eval aggregate-listening listening-review.json reveal-mapping.jso
   --seed 20260812
 ```
 
-The output keeps every criterion separate, reports deterministic bootstrap intervals, and calculates interval Krippendorff alpha where multiple raters overlap. Agreement measures rating consistency, not correctness or perceptual truth.
+The output keeps every criterion separate, reports deterministic bootstrap intervals, and calculates interval Krippendorff alpha where multiple raters overlap. It fails on an incomplete rater by sample by criterion matrix by default. Use `--allow-incomplete` only when an explicitly incomplete coverage report is the intended artifact. Agreement measures rating consistency, not correctness or perceptual truth.
 
 ## Score objective observations
 
@@ -145,6 +161,31 @@ instavar-voice-eval score-objective examples/objective-observations.json \
 ```
 
 The result reports ASR word error rate, speaker-embedding cosine similarity, invalid-output rate, real-time factor, generation time, audio duration, and peak memory independently. These are objective proxies. They do not establish accent fidelity, cadence, naturalness, or listening fatigue.
+
+The scorer also reports every extractor and revision observed for ASR, speaker
+encoding, and runtime probes. Mixed provenance remains visible in an ordinary
+score report and is rejected by the matched-comparison command.
+
+## Compare a matched baseline and adapted candidate
+
+Generate the base model and adapted artifact from the same prompt pack and
+frozen seeds. Every observation used for comparison must include `seed` as well
+as `prompt_id`:
+
+```bash
+instavar-voice-eval compare-matched objective-observations.json \
+  --baseline base-model \
+  --adapted selected-adapter \
+  --output matched-comparison.json \
+  --seed 20260812
+```
+
+The command fails if either candidate is missing a prompt and seed pair, if the
+requested transcripts differ, if a pair is duplicated, or if ASR, speaker, or
+runtime extractor provenance is mixed. Invalid generations remain in the
+validity delta. Metric deltas use exact pairs and keep directionality explicit,
+but the report sets `proves_adaptation_benefit` to false because objective
+proxies cannot decide perceptual improvement.
 
 ## Run the common lifecycle
 

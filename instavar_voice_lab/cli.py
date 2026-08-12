@@ -6,10 +6,11 @@ import sys
 from pathlib import Path
 
 from .audio_probe import compare_wav_probes, probe_wav
+from .comparison import compare_matched_candidates
 from .contracts import VALIDATORS, validate_document
 from .corpus import audit_corpus
 from .lifecycle import run_lifecycle, validate_backend_spec
-from .listening import aggregate_listening_results, build_blind_pack
+from .listening import aggregate_listening_results, build_blind_pack, stage_blind_audio
 from .metrics import score_objective_observations
 from .suite import build_generation_plan, check_suite_coverage, validate_prompt_pack
 
@@ -80,6 +81,12 @@ def build_parser() -> argparse.ArgumentParser:
     blind.add_argument("--review-output", type=Path, required=True)
     blind.add_argument("--reveal-output", type=Path, required=True)
     blind.add_argument("--seed", type=int, required=True)
+    blind.add_argument(
+        "--stage-root",
+        type=Path,
+        help="copy audio to identity-neutral blind_audio paths under this directory",
+    )
+    blind.add_argument("--stage-manifest", type=Path)
 
     objective = commands.add_parser(
         "score-objective",
@@ -98,6 +105,21 @@ def build_parser() -> argparse.ArgumentParser:
     listening.add_argument("ratings", type=Path)
     listening.add_argument("--output", type=Path, required=True)
     listening.add_argument("--seed", type=int, default=20260812)
+    listening.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help="emit explicit incomplete coverage instead of failing on missing ratings",
+    )
+
+    matched = commands.add_parser(
+        "compare-matched",
+        help="compare baseline and adapted observations paired by prompt and seed",
+    )
+    matched.add_argument("observations", type=Path)
+    matched.add_argument("--baseline", required=True)
+    matched.add_argument("--adapted", required=True)
+    matched.add_argument("--output", type=Path, required=True)
+    matched.add_argument("--seed", type=int, default=20260812)
 
     backend = commands.add_parser("validate-backend", help="validate a lifecycle backend specification")
     backend.add_argument("spec", type=Path)
@@ -180,12 +202,32 @@ def main(argv: list[str] | None = None) -> int:
         try:
             samples = _read_json(args.samples)
             criteria = _read_json(args.criteria)
-            review, reveal = build_blind_pack(samples, criteria, seed=args.seed)
+            if not isinstance(samples, list):
+                raise ValueError("samples must be a JSON array")
+            normalized_samples = []
+            for sample in samples:
+                if not isinstance(sample, dict):
+                    normalized_samples.append(sample)
+                    continue
+                normalized = dict(sample)
+                audio_path = Path(str(normalized.get("audio_path", "")))
+                if not audio_path.is_absolute():
+                    normalized["audio_path"] = str((args.samples.parent / audio_path).resolve())
+                normalized_samples.append(normalized)
+            review, reveal = build_blind_pack(normalized_samples, criteria, seed=args.seed)
         except (OSError, json.JSONDecodeError, ValueError) as error:
             print(error, file=sys.stderr)
             return 2
         _write_json(args.review_output, review)
         _write_json(args.reveal_output, reveal)
+        if args.stage_root:
+            try:
+                stage_manifest = stage_blind_audio(review, reveal, args.stage_root)
+            except (OSError, ValueError) as error:
+                print(error, file=sys.stderr)
+                return 2
+            stage_manifest_path = args.stage_manifest or args.stage_root / "blind-audio-manifest.json"
+            _write_json(stage_manifest_path, stage_manifest)
         return 0
     if args.command == "score-objective":
         try:
@@ -204,6 +246,23 @@ def main(argv: list[str] | None = None) -> int:
                 _read_json(args.review),
                 _read_json(args.reveal),
                 _read_json(args.ratings),
+                seed=args.seed,
+                allow_incomplete=args.allow_incomplete,
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0
+    if args.command == "compare-matched":
+        try:
+            rows = _read_json(args.observations)
+            if not isinstance(rows, list):
+                raise ValueError("objective observations must be a JSON array")
+            result = compare_matched_candidates(
+                rows,
+                baseline_candidate_id=args.baseline,
+                adapted_candidate_id=args.adapted,
                 seed=args.seed,
             )
         except (OSError, json.JSONDecodeError, ValueError) as error:

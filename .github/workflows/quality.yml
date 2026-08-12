@@ -22,3 +22,4 @@ jobs:
       - run: instavar-voice-eval validate experiment examples/experiment-manifest.json
       - run: instavar-voice-eval validate evaluation examples/evaluation-report.json
       - run: instavar-voice-eval validate package examples/artifact-package.json
+      - run: instavar-voice-eval compare-matched examples/matched-objective-observations.json --baseline base-model --adapted selected-adapter --output /tmp/matched-comparison.json
