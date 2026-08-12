@@ -16,6 +16,7 @@ The shared layer provides:
 - criterion-level listening aggregation with bootstrap intervals and interval agreement; and
 - a fail-closed lifecycle runner for model-specific preflight, training, inference, evaluation, and packaging;
 - a frozen candidate by prompt by seed generation plan with completeness accounting;
+- plan-bound objective metric requirements that reject bilateral metric omission;
 - exact baseline-versus-adapted pairing with extractor-provenance checks and paired bootstrap intervals;
 - exact-versus-derived cross-runtime artifact manifests with live content rechecks;
 - lifecycle-stage and matched-comparison declarations for every supported adaptation path;
@@ -49,6 +50,12 @@ failed generations recorded with `valid: false`. Coverage also verifies that
 candidate, prompt, seed, and requested text match the plan instead of trusting a
 matching sample ID alone. It does not convert signal, ASR, speaker, or runtime
 measurements into a perceptual quality claim.
+
+Generation plan 1.1 also carries the prompt pack's required objective metrics.
+Matched comparison requires every valid pair to contain them. This prevents two
+candidates from omitting the same difficult metric and producing a superficially
+complete empty or timing-only comparison. Legacy plan 1.0 remains readable, but
+its report states that required metric coverage was not enforced.
 
 ## Validate contracts
 
@@ -289,10 +296,12 @@ instavar-voice-eval score-objective examples/objective-observations.json \
 ```
 
 The result reports ASR word error rate, speaker-embedding cosine similarity,
-invalid-output rate, real-time factor, generation time, audio duration, and peak
-memory independently. Per-candidate metric coverage makes selective omission
-visible. These are objective proxies. They do not establish accent fidelity,
-cadence, naturalness, or listening fatigue.
+invalid-output rate, real-time factor, generation time, audio duration, sample
+rate, silence fraction, clipping fraction, and peak memory independently.
+Per-candidate metric coverage makes selective omission visible. Sample rate,
+silence, and clipping observations require versioned `audio_probe` evidence.
+These are objective proxies. They do not establish accent fidelity, cadence,
+naturalness, or listening fatigue.
 
 The scorer also reports every extractor and revision observed for ASR, speaker
 encoding, and runtime probes. Mixed provenance remains visible in an ordinary
@@ -317,7 +326,9 @@ The command binds every observation to the frozen generation plan and fails if
 either candidate is missing a planned sample, an unplanned sample is added, a
 prompt or seed differs, the requested transcripts differ, a pair is duplicated,
 ASR, speaker, or runtime extractor provenance is mixed, or a valid candidate
-selectively omits metrics available for its matched peer. Invalid generations
+selectively omits metrics available for its matched peer. With a generation
+plan 1.1, both candidates must also supply every objective metric declared by
+the frozen prompt pack. Invalid generations
 remain in the validity delta but cannot improve WER, speaker similarity,
 audio-duration, or real-time-factor summaries. Metric deltas use exact pairs
 and keep directionality explicit, but the report sets

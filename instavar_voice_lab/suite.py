@@ -8,6 +8,17 @@ from typing import Any, Iterable
 
 
 IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+SUPPORTED_OBJECTIVE_METRICS = {
+    "asr_word_error_rate",
+    "speaker_embedding_similarity",
+    "invalid_output_rate",
+    "duration_seconds",
+    "sample_rate_hz",
+    "silence_fraction",
+    "clipping_fraction",
+    "real_time_factor",
+    "peak_memory_bytes",
+}
 
 
 def _canonical_sha256(value: Any) -> str:
@@ -100,6 +111,15 @@ def validate_prompt_pack(document: Any) -> list[str]:
             errors.append(f"{key} must contain non-empty strings")
         elif len(set(values)) != len(values):
             errors.append(f"{key} must not contain duplicates")
+    objective_metrics = document.get("objective_metrics")
+    if isinstance(objective_metrics, list):
+        unsupported = sorted(
+            value
+            for value in objective_metrics
+            if isinstance(value, str) and value not in SUPPORTED_OBJECTIVE_METRICS
+        )
+        if unsupported:
+            errors.append(f"objective_metrics contains unsupported metrics: {', '.join(unsupported)}")
     return errors
 
 
@@ -147,7 +167,7 @@ def build_generation_plan(
                 samples.append(row)
 
     return {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "prompt_pack": {
             "id": prompt_pack["id"],
             "version": prompt_pack["version"],
@@ -157,6 +177,7 @@ def build_generation_plan(
         "seeds": frozen_seeds,
         "prompt_count": len(prompt_pack["prompts"]),
         "sample_count": len(samples),
+        "required_objective_metrics": list(prompt_pack["objective_metrics"]),
         "samples": samples,
         "generation_requirements": {
             "same_transcripts": bool(prompt_pack["generation"]["require_same_transcripts"]),
@@ -167,8 +188,8 @@ def build_generation_plan(
 
 
 def check_suite_coverage(plan: Any, observations: Any) -> dict[str, Any]:
-    if not isinstance(plan, dict) or plan.get("schema_version") != "1.0.0":
-        raise ValueError("generation plan must be a version 1.0.0 object")
+    if not isinstance(plan, dict) or plan.get("schema_version") not in {"1.0.0", "1.1.0"}:
+        raise ValueError("generation plan must be a version 1.0.0 or 1.1.0 object")
     expected_rows = plan.get("samples")
     if not isinstance(expected_rows, list) or not expected_rows:
         raise ValueError("generation plan must contain samples")

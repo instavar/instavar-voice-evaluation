@@ -126,6 +126,39 @@ class MatchedComparisonTests(unittest.TestCase):
                 adapted_candidate_id="adapter",
             )
 
+    def test_rejects_bilateral_omission_of_plan_required_metrics(self) -> None:
+        rows = [observation("base", "p1", 42), observation("adapter", "p1", 42)]
+        for row in rows:
+            del row["hypothesis_text"]
+            del row["reference_speaker_embedding"]
+            del row["speaker_embedding"]
+            del row["evidence"]["asr"]
+            del row["evidence"]["speaker_encoder"]
+        bound_plan = generation_plan(rows)
+        bound_plan["schema_version"] = "1.1.0"
+        bound_plan["required_objective_metrics"] = [
+            "asr_word_error_rate",
+            "speaker_embedding_similarity",
+            "invalid_output_rate",
+        ]
+        with self.assertRaisesRegex(ValueError, "missing plan-required metrics"):
+            compare_matched_candidates(
+                rows,
+                plan=bound_plan,
+                baseline_candidate_id="base",
+                adapted_candidate_id="adapter",
+            )
+
+    def test_legacy_plan_reports_that_metric_coverage_is_not_enforced(self) -> None:
+        rows = [observation("base", "p1", 42), observation("adapter", "p1", 42)]
+        result = compare_matched_candidates(
+            rows,
+            plan=generation_plan(rows),
+            baseline_candidate_id="base",
+            adapted_candidate_id="adapter",
+        )
+        self.assertFalse(result["generation_plan"]["required_metric_coverage_enforced"])
+
     def test_preserves_invalid_pair_in_validity_delta(self) -> None:
         rows = [observation("base", "p1", 42), observation("adapter", "p1", 42, valid=False)]
         result = compare_matched_candidates(

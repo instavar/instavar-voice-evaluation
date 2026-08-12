@@ -19,6 +19,9 @@ METRIC_DIRECTIONS = {
     "generation_seconds": "lower_is_better",
     "peak_memory_bytes": "lower_is_better",
     "audio_duration_seconds": "context_only",
+    "sample_rate_hz": "context_only",
+    "silence_fraction": "context_only",
+    "clipping_fraction": "lower_is_better",
 }
 
 METRIC_EVIDENCE_KINDS = {
@@ -28,6 +31,21 @@ METRIC_EVIDENCE_KINDS = {
     "generation_seconds": "runtime",
     "peak_memory_bytes": "runtime",
     "audio_duration_seconds": "runtime",
+    "sample_rate_hz": "audio_probe",
+    "silence_fraction": "audio_probe",
+    "clipping_fraction": "audio_probe",
+}
+
+REQUIRED_METRIC_OUTPUTS = {
+    "asr_word_error_rate": "asr_word_error_rate",
+    "speaker_embedding_similarity": "speaker_embedding_similarity",
+    "invalid_output_rate": None,
+    "duration_seconds": "audio_duration_seconds",
+    "sample_rate_hz": "sample_rate_hz",
+    "silence_fraction": "silence_fraction",
+    "clipping_fraction": "clipping_fraction",
+    "real_time_factor": "real_time_factor",
+    "peak_memory_bytes": "peak_memory_bytes",
 }
 
 
@@ -51,8 +69,8 @@ def _validate_plan_binding(
     rows: list[dict[str, Any]],
     candidate_ids: set[str],
 ) -> dict[str, Any]:
-    if not isinstance(plan, dict) or plan.get("schema_version") != "1.0.0":
-        raise ValueError("generation plan must be a version 1.0.0 object")
+    if not isinstance(plan, dict) or plan.get("schema_version") not in {"1.0.0", "1.1.0"}:
+        raise ValueError("generation plan must be a version 1.0.0 or 1.1.0 object")
     plan_rows = plan.get("samples")
     if not isinstance(plan_rows, list) or not plan_rows:
         raise ValueError("generation plan must contain samples")
@@ -111,10 +129,22 @@ def _validate_plan_binding(
         or not re.fullmatch(r"[0-9a-f]{64}", prompt_pack["sha256"])
     ):
         raise ValueError("generation plan must bind a prompt_pack sha256")
+    required_metrics = plan.get("required_objective_metrics", [])
+    if plan.get("schema_version") == "1.1.0":
+        if not isinstance(required_metrics, list) or not required_metrics:
+            raise ValueError("generation plan 1.1.0 must declare required_objective_metrics")
+        if any(not isinstance(metric, str) or metric not in REQUIRED_METRIC_OUTPUTS for metric in required_metrics):
+            raise ValueError("generation plan contains unsupported required_objective_metrics")
+        if len(required_metrics) != len(set(required_metrics)):
+            raise ValueError("generation plan required_objective_metrics must be unique")
+    elif required_metrics:
+        raise ValueError("generation plan 1.0.0 cannot declare required_objective_metrics")
     return {
         "sha256": _canonical_sha256(plan),
         "prompt_pack": prompt_pack,
         "sample_count": len(expected),
+        "required_objective_metrics": required_metrics,
+        "required_metric_coverage_enforced": plan.get("schema_version") == "1.1.0",
     }
 
 
@@ -224,6 +254,20 @@ def compare_matched_candidates(
         adapted_invalid += not adapted_valid
         baseline_metrics = scored_by_id[str(baseline_row["sample_id"])]["metrics"]
         adapted_metrics = scored_by_id[str(adapted_row["sample_id"])]["metrics"]
+        required_outputs = {
+            output
+            for metric in plan_binding["required_objective_metrics"]
+            if (output := REQUIRED_METRIC_OUTPUTS[metric]) is not None
+        }
+        if baseline_valid and adapted_valid:
+            missing_required_baseline = sorted(required_outputs - set(baseline_metrics))
+            missing_required_adapted = sorted(required_outputs - set(adapted_metrics))
+            if missing_required_baseline or missing_required_adapted:
+                raise ValueError(
+                    "matched comparison is missing plan-required metrics for a valid pair; "
+                    f"prompt={key[0]}; seed={key[1]}; missing baseline={missing_required_baseline}; "
+                    f"missing adapted={missing_required_adapted}"
+                )
         if baseline_valid and adapted_valid and set(baseline_metrics) != set(adapted_metrics):
             missing_adapted = sorted(set(baseline_metrics) - set(adapted_metrics))
             missing_baseline = sorted(set(adapted_metrics) - set(baseline_metrics))
@@ -304,8 +348,8 @@ def compare_matched_candidates(
         "pairs": pair_rows,
         "proves_adaptation_benefit": False,
         "evidence_boundary": (
-            "A passed matched comparison proves exact prompt and seed pairing, symmetric metric availability for "
-            "valid pairs, and consistent extractor provenance. "
+            "A passed matched comparison proves exact prompt and seed pairing, plan-required and symmetric metric "
+            "availability for valid pairs, and consistent extractor provenance. "
             "Objective deltas remain proxies and do not establish speaker identity, accent fidelity, cadence, naturalness, or preference."
         ),
     }

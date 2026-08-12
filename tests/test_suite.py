@@ -23,6 +23,8 @@ class SuiteTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first["prompt_count"], 7)
         self.assertEqual(first["sample_count"], 42)
+        self.assertEqual(first["schema_version"], "1.1.0")
+        self.assertEqual(first["required_objective_metrics"], self.prompt_pack()["objective_metrics"])
         self.assertEqual(len({row["sample_id"] for row in first["samples"]}), 42)
 
     def test_coverage_preserves_invalid_outputs_as_evidence(self) -> None:
@@ -77,6 +79,12 @@ class SuiteTests(unittest.TestCase):
             result["mismatched_observations"],
             [{"sample_id": observations[0]["sample_id"], "fields": ["requested_text", "seed"]}],
         )
+
+    def test_prompt_pack_rejects_unimplemented_objective_metric(self) -> None:
+        prompt_pack = self.prompt_pack()
+        prompt_pack["objective_metrics"].append("subjective_magic_score")
+        errors = validate_prompt_pack(prompt_pack)
+        self.assertTrue(any("unsupported metrics" in error for error in errors))
 
 
 if __name__ == "__main__":

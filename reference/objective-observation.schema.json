@@ -41,6 +41,9 @@
       "generation_seconds": { "type": "number", "minimum": 0 },
       "audio_duration_seconds": { "type": "number", "exclusiveMinimum": 0 },
       "peak_memory_bytes": { "type": "number", "minimum": 0 },
+      "sample_rate_hz": { "type": "integer", "minimum": 1 },
+      "silence_fraction": { "type": "number", "minimum": 0, "maximum": 1 },
+      "clipping_fraction": { "type": "number", "minimum": 0, "maximum": 1 },
       "evidence": { "type": "object" }
     },
     "dependentRequired": {

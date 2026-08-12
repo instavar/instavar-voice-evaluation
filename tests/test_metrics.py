@@ -27,12 +27,16 @@ class MetricTests(unittest.TestCase):
                     "generation_seconds": 0.5,
                     "audio_duration_seconds": 1.0,
                     "peak_memory_bytes": 100,
+                    "sample_rate_hz": 24000,
+                    "silence_fraction": 0.1,
+                    "clipping_fraction": 0.0,
                     "reference_speaker_embedding": [1, 0],
                     "speaker_embedding": [1, 0],
                     "evidence": {
                         "asr": {"extractor": "test", "revision": "1"},
                         "speaker_encoder": {"extractor": "test", "revision": "1"},
                         "runtime": {"extractor": "test", "revision": "1"},
+                        "audio_probe": {"extractor": "test-probe", "revision": "1"},
                     },
                 },
                 {
@@ -52,6 +56,9 @@ class MetricTests(unittest.TestCase):
         self.assertEqual(candidate["real_time_factor"]["mean"], 0.5)
         self.assertEqual(candidate["metric_coverage"]["asr_word_error_rate"]["rate"], 1.0)
         self.assertEqual(candidate["metric_coverage"]["generation_seconds"]["rate"], 0.5)
+        self.assertEqual(candidate["sample_rate_hz"]["mean"], 24000)
+        self.assertEqual(candidate["silence_fraction"]["mean"], 0.1)
+        self.assertEqual(candidate["clipping_fraction"]["mean"], 0.0)
         self.assertNotIn("composite_score", result)
         self.assertFalse(result["proves_perceptual_quality"])
 
@@ -124,6 +131,20 @@ class MetricTests(unittest.TestCase):
             "artifact_set_id": "voice-1",
         }
         with self.assertRaisesRegex(ValueError, "must be supplied together"):
+            score_objective_observations([row])
+
+    def test_rejects_out_of_range_audio_probe_metrics(self) -> None:
+        row = {
+            "sample_id": "sample-1",
+            "candidate_id": "adapter",
+            "prompt_id": "p1",
+            "requested_text": "hello",
+            "valid": True,
+            "sample_rate_hz": 24000.5,
+            "silence_fraction": 1.1,
+            "evidence": {"audio_probe": {"extractor": "probe", "revision": "1"}},
+        }
+        with self.assertRaisesRegex(ValueError, "sample_rate_hz must be a positive integer"):
             score_objective_observations([row])
 
 

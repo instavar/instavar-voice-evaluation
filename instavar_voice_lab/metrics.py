@@ -140,6 +140,9 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
                 "generation_seconds": [],
                 "audio_duration_seconds": [],
                 "peak_memory_bytes": [],
+                "sample_rate_hz": [],
+                "silence_fraction": [],
+                "clipping_fraction": [],
             },
         )
         candidate["total"] += 1
@@ -199,8 +202,13 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
         generation_seconds = _number(row, "generation_seconds")
         audio_duration_seconds = _number(row, "audio_duration_seconds")
         peak_memory_bytes = _number(row, "peak_memory_bytes")
+        sample_rate_hz = _number(row, "sample_rate_hz")
+        silence_fraction = _number(row, "silence_fraction")
+        clipping_fraction = _number(row, "clipping_fraction")
         if generation_seconds is not None or audio_duration_seconds is not None or peak_memory_bytes is not None:
             require_evidence("runtime")
+        if sample_rate_hz is not None or silence_fraction is not None or clipping_fraction is not None:
+            require_evidence("audio_probe")
         if generation_seconds is not None:
             if generation_seconds < 0:
                 raise ValueError(f"observation {index} generation_seconds must be non-negative")
@@ -224,6 +232,27 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
                 raise ValueError(f"observation {index} peak_memory_bytes must be non-negative")
             sample_result["metrics"]["peak_memory_bytes"] = peak_memory_bytes
             candidate["peak_memory_bytes"].append(peak_memory_bytes)
+        if sample_rate_hz is not None:
+            if sample_rate_hz <= 0 or not sample_rate_hz.is_integer():
+                raise ValueError(f"observation {index} sample_rate_hz must be a positive integer")
+            if row["valid"]:
+                sample_result["metrics"]["sample_rate_hz"] = sample_rate_hz
+                candidate["sample_rate_hz"].append(sample_rate_hz)
+            else:
+                sample_result["excluded_quality_metrics"].append("sample_rate_hz")
+        for name, value in (
+            ("silence_fraction", silence_fraction),
+            ("clipping_fraction", clipping_fraction),
+        ):
+            if value is None:
+                continue
+            if value < 0 or value > 1:
+                raise ValueError(f"observation {index} {name} must be between zero and one")
+            if row["valid"]:
+                sample_result["metrics"][name] = value
+                candidate[name].append(value)
+            else:
+                sample_result["excluded_quality_metrics"].append(name)
         per_sample.append(sample_result)
 
     candidates: list[dict[str, Any]] = []
@@ -247,6 +276,9 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
                     values["audio_duration_seconds"], seed=candidate_seed + 5
                 ),
                 "peak_memory_bytes": _metric_summary(values["peak_memory_bytes"], seed=candidate_seed + 6),
+                "sample_rate_hz": _metric_summary(values["sample_rate_hz"], seed=candidate_seed + 7),
+                "silence_fraction": _metric_summary(values["silence_fraction"], seed=candidate_seed + 8),
+                "clipping_fraction": _metric_summary(values["clipping_fraction"], seed=candidate_seed + 9),
                 "metric_coverage": {
                     "asr_word_error_rate": {
                         "observed": len(values["word_error_rate"]),
@@ -271,6 +303,18 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
                     "peak_memory_bytes": {
                         "observed": len(values["peak_memory_bytes"]),
                         "eligible": total,
+                    },
+                    "sample_rate_hz": {
+                        "observed": len(values["sample_rate_hz"]),
+                        "eligible": valid,
+                    },
+                    "silence_fraction": {
+                        "observed": len(values["silence_fraction"]),
+                        "eligible": valid,
+                    },
+                    "clipping_fraction": {
+                        "observed": len(values["clipping_fraction"]),
+                        "eligible": valid,
                     },
                 },
             }
