@@ -334,6 +334,17 @@ that plan. The binding establishes which text was requested. It does not prove
 that the ASR transcript is correct, that the audio came from an honest TTS run,
 or that the speech is perceptually good.
 
+When a generation plan contains prompt categories, the same score report also
+includes `plan_category_stratification`. Each candidate receives separate
+invalid-output rate, metric summaries, and metric coverage for categories such
+as `pronunciation`, `natural_local_context`, and `long_form_cadence`.
+`compare-matched` reports matched deltas and validity by the same plan-bound
+categories and rejects candidate-specific category drift. Legacy plans without
+categories remain valid but report stratification as unavailable. Category
+strata can expose a localized proxy regression hidden by an overall mean. They
+do not define category weights, explain a difference, measure cadence from ASR,
+or replace criterion-specific blind listening.
+
 ## Bind runtime metrics to generation attempts
 
 Do not treat timing and peak-memory fields copied into an observation as

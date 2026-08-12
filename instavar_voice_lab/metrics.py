@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import random
 import re
+from collections import defaultdict
 from statistics import mean, median
 from typing import Any
 
@@ -156,6 +157,153 @@ def _asr_reference_text_provenance(rows: list[dict[str, Any]], generation_plan: 
     }
 
 
+def _plan_categories(rows: list[dict[str, Any]], generation_plan: Any | None) -> dict[str, Any]:
+    if generation_plan is None:
+        return {
+            "mode": "unavailable",
+            "generation_plan_sha256": None,
+            "planned_sample_count": None,
+            "planned_categorized_sample_count": None,
+            "planned_uncategorized_sample_count": None,
+            "categorized_sample_count": 0,
+            "uncategorized_sample_count": len(rows),
+            "categories": {},
+            "evidence_boundary": "Category strata require a live generation plan.",
+        }
+    if not isinstance(generation_plan, dict) or generation_plan.get("schema_version") not in {"1.0.0", "1.1.0"}:
+        raise ValueError("category generation plan must be a version 1.0.0 or 1.1.0 object")
+    raw_samples = generation_plan.get("samples")
+    if not isinstance(raw_samples, list) or not raw_samples:
+        raise ValueError("category generation plan must contain samples")
+    planned_by_id: dict[str, dict[str, Any]] = {}
+    category_values_by_prompt: dict[str, set[str | None]] = defaultdict(set)
+    planned_categorized = 0
+    for index, planned in enumerate(raw_samples):
+        if not isinstance(planned, dict) or not isinstance(planned.get("sample_id"), str):
+            raise ValueError(f"category generation plan sample {index} must declare sample_id")
+        if planned["sample_id"] in planned_by_id:
+            raise ValueError(f"category generation plan duplicates sample_id: {planned['sample_id']}")
+        category = planned.get("category")
+        if category is not None and (not isinstance(category, str) or not category.strip()):
+            raise ValueError(f"category generation plan sample {index} category must be non-empty when present")
+        normalized_category = category.strip() if isinstance(category, str) else None
+        planned_categorized += normalized_category is not None
+        if isinstance(planned.get("prompt_id"), str):
+            category_values_by_prompt[planned["prompt_id"]].add(normalized_category)
+        planned_by_id[planned["sample_id"]] = planned
+    for prompt_id, category_values in sorted(category_values_by_prompt.items()):
+        if len(category_values) > 1:
+            raise ValueError(f"category generation plan prompt {prompt_id} must use one category across samples")
+
+    categories: dict[str, str] = {}
+    uncategorized = 0
+    for index, row in enumerate(rows):
+        planned = planned_by_id.get(row.get("sample_id"))
+        if planned is None:
+            raise ValueError(f"observation {index} is absent from the category generation plan")
+        mismatches = [
+            observation_field
+            for observation_field, plan_field in (
+                ("candidate_id", "candidate_id"),
+                ("prompt_id", "prompt_id"),
+                ("seed", "seed"),
+                ("requested_text", "text"),
+            )
+            if row.get(observation_field) != planned.get(plan_field)
+        ]
+        if mismatches:
+            raise ValueError(
+                f"observation {row.get('sample_id')} does not match category generation plan fields: "
+                + ", ".join(mismatches)
+            )
+        category = planned.get("category")
+        if isinstance(category, str):
+            categories[str(row["sample_id"])] = category.strip()
+        else:
+            uncategorized += 1
+    categorized = len(rows) - uncategorized
+    planned_uncategorized = len(raw_samples) - planned_categorized
+    return {
+        "mode": "generation_plan" if uncategorized == 0 and planned_uncategorized == 0 else "partial_generation_plan",
+        "generation_plan_sha256": canonical_sha256(generation_plan),
+        "planned_sample_count": len(raw_samples),
+        "planned_categorized_sample_count": planned_categorized,
+        "planned_uncategorized_sample_count": planned_uncategorized,
+        "categorized_sample_count": categorized,
+        "uncategorized_sample_count": uncategorized,
+        "categories": categories,
+        "evidence_boundary": (
+            "Category strata are bound to generation-plan labels. They expose heterogeneous proxy results but do not "
+            "establish perceptual quality or explain why a category differs."
+        ),
+    }
+
+
+def _category_strata(samples: list[dict[str, Any]], plan_categories: dict[str, Any], *, seed: int) -> dict[str, Any]:
+    public_binding = {key: value for key, value in plan_categories.items() if key != "categories"}
+    if not plan_categories["categories"]:
+        return {**public_binding, "candidates": []}
+
+    metric_names = (
+        "asr_word_error_rate",
+        "speaker_embedding_similarity",
+        "real_time_factor",
+        "generation_seconds",
+        "audio_duration_seconds",
+        "peak_memory_bytes",
+        "sample_rate_hz",
+        "silence_fraction",
+        "clipping_fraction",
+    )
+    quality_metrics = {
+        "asr_word_error_rate",
+        "speaker_embedding_similarity",
+        "real_time_factor",
+        "audio_duration_seconds",
+        "sample_rate_hz",
+        "silence_fraction",
+        "clipping_fraction",
+    }
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for sample in samples:
+        category = plan_categories["categories"].get(sample["sample_id"])
+        if category is not None:
+            grouped[(sample["candidate_id"], category)].append(sample)
+
+    by_candidate: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for stratum_index, ((candidate_id, category), category_samples) in enumerate(sorted(grouped.items())):
+        valid_count = sum(sample["valid"] is True for sample in category_samples)
+        total = len(category_samples)
+        metrics: dict[str, Any] = {}
+        coverage: dict[str, Any] = {}
+        for metric_index, metric in enumerate(metric_names):
+            values = [float(sample["metrics"][metric]) for sample in category_samples if metric in sample["metrics"]]
+            eligible = valid_count if metric in quality_metrics else total
+            metrics[metric] = _metric_summary(values, seed=seed + stratum_index * 100 + metric_index)
+            coverage[metric] = {
+                "observed": len(values),
+                "eligible": eligible,
+                "rate": len(values) / eligible if eligible else None,
+            }
+        by_candidate[candidate_id].append(
+            {
+                "category": category,
+                "sample_count": total,
+                "valid_sample_count": valid_count,
+                "invalid_output_rate": (total - valid_count) / total,
+                "metrics": metrics,
+                "metric_coverage": coverage,
+            }
+        )
+    return {
+        **public_binding,
+        "candidates": [
+            {"candidate_id": candidate_id, "categories": categories}
+            for candidate_id, categories in sorted(by_candidate.items())
+        ],
+    }
+
+
 def score_objective_observations(
     rows: list[dict[str, Any]],
     *,
@@ -166,6 +314,7 @@ def score_objective_observations(
     if contract_errors:
         raise ValueError("; ".join(contract_errors))
     asr_reference_text = _asr_reference_text_provenance(rows, generation_plan)
+    plan_categories = _plan_categories(rows, generation_plan)
 
     required = {"sample_id", "candidate_id", "prompt_id", "requested_text", "valid"}
     seen: set[str] = set()
@@ -220,6 +369,8 @@ def score_objective_observations(
             "excluded_quality_metrics": [],
             "evidence": row.get("evidence", {}),
         }
+        if sample_id in plan_categories["categories"]:
+            sample_result["category"] = plan_categories["categories"][sample_id]
         evidence = row.get("evidence", {})
         if not isinstance(evidence, dict):
             raise ValueError(f"observation {index} evidence must be an object")
@@ -528,6 +679,7 @@ def score_objective_observations(
         },
         "bootstrap_seed": seed,
         "metric_provenance": metric_provenance,
+        "plan_category_stratification": _category_strata(per_sample, plan_categories, seed=seed + 100000),
         "candidates": candidates,
         "samples": per_sample,
     }

@@ -80,6 +80,86 @@ def _canonical_sha256(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _category_comparison(pair_rows: list[dict[str, Any]], *, seed: int) -> dict[str, Any]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    uncategorized = 0
+    for pair in pair_rows:
+        category = pair.get("category")
+        if isinstance(category, str):
+            grouped[category].append(pair)
+        else:
+            uncategorized += 1
+    if not grouped:
+        return {
+            "mode": "unavailable",
+            "categorized_pair_count": 0,
+            "uncategorized_pair_count": len(pair_rows),
+            "categories": [],
+            "evidence_boundary": "Matched category deltas require category labels in the generation plan.",
+        }
+
+    categories: list[dict[str, Any]] = []
+    for category_index, (category, pairs) in enumerate(sorted(grouped.items())):
+        baseline_invalid = sum(pair["baseline_valid"] is not True for pair in pairs)
+        adapted_invalid = sum(pair["adapted_valid"] is not True for pair in pairs)
+        deltas: dict[str, list[float]] = defaultdict(list)
+        for pair in pairs:
+            for metric, values in pair["metrics"].items():
+                deltas[metric].append(float(values["adapted_minus_baseline"]))
+        metrics: list[dict[str, Any]] = []
+        for metric_index, (metric, values) in enumerate(sorted(deltas.items())):
+            direction = METRIC_DIRECTIONS.get(metric, "context_only")
+            mean_delta = mean(values)
+            if direction == "lower_is_better":
+                improvement = -mean_delta
+            elif direction == "higher_is_better":
+                improvement = mean_delta
+            else:
+                improvement = None
+            metrics.append(
+                {
+                    "metric": metric,
+                    "direction": direction,
+                    "matched_pair_count": len(values),
+                    "mean_adapted_minus_baseline": mean_delta,
+                    "median_adapted_minus_baseline": median(values),
+                    "mean_directional_improvement": improvement,
+                    "mean_delta_95pct_bootstrap_ci": bootstrap_mean_interval(
+                        values,
+                        seed=seed + category_index * 100 + metric_index,
+                    ),
+                }
+            )
+        pair_count = len(pairs)
+        categories.append(
+            {
+                "category": category,
+                "pair_count": pair_count,
+                "validity": {
+                    "baseline_invalid_count": baseline_invalid,
+                    "adapted_invalid_count": adapted_invalid,
+                    "baseline_invalid_output_rate": baseline_invalid / pair_count,
+                    "adapted_invalid_output_rate": adapted_invalid / pair_count,
+                    "adapted_minus_baseline_invalid_output_rate": (
+                        adapted_invalid - baseline_invalid
+                    )
+                    / pair_count,
+                },
+                "metrics": metrics,
+            }
+        )
+    return {
+        "mode": "generation_plan" if uncategorized == 0 else "partial_generation_plan",
+        "categorized_pair_count": len(pair_rows) - uncategorized,
+        "uncategorized_pair_count": uncategorized,
+        "categories": categories,
+        "evidence_boundary": (
+            "Category deltas expose heterogeneous objective proxies. They do not establish perceptual quality, "
+            "causality, or a universal category weighting."
+        ),
+    }
+
+
 def _validate_plan_binding(
     plan: Any,
     rows: list[dict[str, Any]],
@@ -471,9 +551,17 @@ def compare_matched_candidates(
     pair_rows: list[dict[str, Any]] = []
     baseline_invalid = 0
     adapted_invalid = 0
-    for key in sorted(baseline_keys):
+    for pair_index, key in enumerate(sorted(baseline_keys)):
         baseline_row = grouped[baseline_candidate_id][key]
         adapted_row = grouped[adapted_candidate_id][key]
+        baseline_category = planned_by_id[baseline_row["sample_id"]].get("category")
+        adapted_category = planned_by_id[adapted_row["sample_id"]].get("category")
+        if baseline_category != adapted_category:
+            raise ValueError(f"generation plan category mismatch for prompt {key[0]}, seed {key[1]}")
+        if baseline_category is not None and (
+            not isinstance(baseline_category, str) or not baseline_category.strip()
+        ):
+            raise ValueError(f"generation plan category must be non-empty for prompt {key[0]}, seed {key[1]}")
         speaker_reference_set_sha256, speaker_reference_assignment_sha256_value = _matched_speaker_reference_set(
             baseline_row,
             adapted_row,
@@ -535,19 +623,20 @@ def compare_matched_candidates(
                 "adapted_minus_baseline": delta,
             }
             paired_deltas[metric].append(delta)
-        pair_rows.append(
-            {
-                "prompt_id": key[0],
-                "seed": key[1],
-                "baseline_sample_id": baseline_row["sample_id"],
-                "adapted_sample_id": adapted_row["sample_id"],
-                "baseline_valid": baseline_valid,
-                "adapted_valid": adapted_valid,
-                "speaker_reference_set_sha256": speaker_reference_set_sha256,
-                "speaker_reference_assignment_sha256": speaker_reference_assignment_sha256_value,
-                "metrics": metrics,
-            }
-        )
+        pair_result = {
+            "prompt_id": key[0],
+            "seed": key[1],
+            "baseline_sample_id": baseline_row["sample_id"],
+            "adapted_sample_id": adapted_row["sample_id"],
+            "baseline_valid": baseline_valid,
+            "adapted_valid": adapted_valid,
+            "speaker_reference_set_sha256": speaker_reference_set_sha256,
+            "speaker_reference_assignment_sha256": speaker_reference_assignment_sha256_value,
+            "metrics": metrics,
+        }
+        if isinstance(baseline_category, str):
+            pair_result["category"] = baseline_category.strip()
+        pair_rows.append(pair_result)
 
     metric_rows: list[dict[str, Any]] = []
     for index, (metric, values) in enumerate(sorted(paired_deltas.items())):
@@ -607,6 +696,7 @@ def compare_matched_candidates(
         },
         "metric_provenance": provenance,
         "metrics": metric_rows,
+        "plan_category_stratification": _category_comparison(pair_rows, seed=seed + 100000),
         "pairs": pair_rows,
         "proves_adaptation_benefit": False,
         "evidence_boundary": (

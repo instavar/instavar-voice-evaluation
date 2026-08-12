@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -102,6 +103,106 @@ class MetricTests(unittest.TestCase):
         self.assertEqual(reference_text["plan_bound_reference_count"], 1)
         self.assertTrue(reference_text["all_scored_references_plan_bound"])
         self.assertEqual(result["samples"][0]["diagnostics"]["asr_reference_text_binding"], "generation_plan")
+
+    def test_reports_plan_bound_category_strata_without_composite_score(self) -> None:
+        rows = []
+        plan_samples = []
+        fixtures = (
+            ("neutral", "neutral_singapore_english", "hello world", "hello world", True),
+            ("pronunciation", "pronunciation", "Sze Min paiseh", "see min", True),
+            ("cadence", "long_form_cadence", "a longer passage", None, False),
+        )
+        for prompt_id, category, requested_text, hypothesis, valid in fixtures:
+            sample_id = f"adapter--{prompt_id}--seed-42"
+            row = {
+                "sample_id": sample_id,
+                "candidate_id": "adapter",
+                "prompt_id": prompt_id,
+                "seed": 42,
+                "requested_text": requested_text,
+                "valid": valid,
+            }
+            if hypothesis is not None:
+                row["hypothesis_text"] = hypothesis
+                row["evidence"] = {"asr": {"extractor": "test-asr", "revision": "1"}}
+            rows.append(row)
+            plan_samples.append(
+                {
+                    "sample_id": sample_id,
+                    "candidate_id": "adapter",
+                    "prompt_id": prompt_id,
+                    "category": category,
+                    "seed": 42,
+                    "text": requested_text,
+                }
+            )
+        plan = {"schema_version": "1.0.0", "samples": plan_samples}
+        result = score_objective_observations(rows, generation_plan=plan)
+        strata = result["plan_category_stratification"]
+        self.assertEqual(strata["mode"], "generation_plan")
+        self.assertEqual(strata["generation_plan_sha256"], canonical_sha256(plan))
+        self.assertEqual(strata["categorized_sample_count"], 3)
+        categories = {
+            category["category"]: category
+            for category in strata["candidates"][0]["categories"]
+        }
+        self.assertEqual(categories["neutral_singapore_english"]["metrics"]["asr_word_error_rate"]["mean"], 0.0)
+        self.assertAlmostEqual(categories["pronunciation"]["metrics"]["asr_word_error_rate"]["mean"], 2 / 3)
+        self.assertEqual(categories["long_form_cadence"]["invalid_output_rate"], 1.0)
+        self.assertNotIn("composite_score", strata)
+
+    def test_category_strata_reject_unbound_or_malformed_plan_rows(self) -> None:
+        row = {
+            "sample_id": "adapter--p1--seed-42",
+            "candidate_id": "adapter",
+            "prompt_id": "p1",
+            "seed": 42,
+            "requested_text": "hello",
+            "valid": True,
+        }
+        missing = {
+            "schema_version": "1.0.0",
+            "samples": [
+                {
+                    "sample_id": "different",
+                    "candidate_id": "adapter",
+                    "prompt_id": "p1",
+                    "category": "pronunciation",
+                    "seed": 42,
+                    "text": "hello",
+                }
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "absent from the category generation plan"):
+            score_objective_observations([row], generation_plan=missing)
+        malformed = deepcopy(missing)
+        malformed["samples"][0]["sample_id"] = row["sample_id"]
+        malformed["samples"][0]["category"] = ""
+        with self.assertRaisesRegex(ValueError, "category must be non-empty"):
+            score_objective_observations([row], generation_plan=malformed)
+
+        selective_omission = {
+            "schema_version": "1.0.0",
+            "samples": [
+                {
+                    "sample_id": row["sample_id"],
+                    "candidate_id": "adapter",
+                    "prompt_id": "p1",
+                    "category": "pronunciation",
+                    "seed": 42,
+                    "text": "hello",
+                },
+                {
+                    "sample_id": "adapter--p1--seed-43",
+                    "candidate_id": "adapter",
+                    "prompt_id": "p1",
+                    "seed": 43,
+                    "text": "hello",
+                },
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "must use one category"):
+            score_objective_observations([row], generation_plan=selective_omission)
 
     def test_rejects_asr_reference_text_drift_from_generation_plan(self) -> None:
         row = {

@@ -54,6 +54,7 @@ def generation_plan(rows: list[dict]) -> dict:
                 "sample_id": row["sample_id"],
                 "candidate_id": row["candidate_id"],
                 "prompt_id": row["prompt_id"],
+                "category": "pronunciation" if row["prompt_id"] == "p1" else "long_form_cadence",
                 "seed": row["seed"],
                 "text": row["requested_text"],
             }
@@ -177,7 +178,26 @@ class MatchedComparisonTests(unittest.TestCase):
         reference_text = result["metric_provenance"]["asr"]["reference_text"]
         self.assertEqual(reference_text["mode"], "generation_plan")
         self.assertTrue(reference_text["all_scored_references_plan_bound"])
+        strata = result["plan_category_stratification"]
+        self.assertEqual(strata["mode"], "generation_plan")
+        self.assertEqual(strata["categorized_pair_count"], 4)
+        self.assertEqual(
+            {category["category"]: category["pair_count"] for category in strata["categories"]},
+            {"long_form_cadence": 2, "pronunciation": 2},
+        )
         self.assertFalse(result["proves_adaptation_benefit"])
+
+    def test_rejects_candidate_specific_plan_category_drift(self) -> None:
+        rows = [observation("base", "p1", 42), observation("adapter", "p1", 42)]
+        plan = generation_plan(rows)
+        plan["samples"][1]["category"] = "long_form_cadence"
+        with self.assertRaisesRegex(ValueError, "must use one category"):
+            compare_matched_candidates(
+                rows,
+                plan=plan,
+                baseline_candidate_id="base",
+                adapted_candidate_id="adapter",
+            )
 
     def test_rejects_missing_pair(self) -> None:
         rows = [observation("base", "p1", 42), observation("adapter", "p2", 42)]
