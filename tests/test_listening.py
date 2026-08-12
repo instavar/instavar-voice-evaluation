@@ -33,6 +33,7 @@ class ListeningPackTests(unittest.TestCase):
         review, reveal = build_blind_pack(samples, ["speaker_identity"], seed=42)
         ratings = {
             "scale": {"min": 1, "max": 5},
+            "expected_rater_ids": ["a", "b"],
             "ratings": [
                 {"rater_id": "a", "blind_id": "sample-0001", "criterion": "speaker_identity", "score": 4},
                 {"rater_id": "b", "blind_id": "sample-0001", "criterion": "speaker_identity", "score": 5},
@@ -55,6 +56,7 @@ class ListeningPackTests(unittest.TestCase):
         review, reveal = build_blind_pack(samples, ["speaker_identity"], seed=42)
         ratings = {
             "scale": {"min": 1, "max": 5},
+            "expected_rater_ids": ["a", "b"],
             "ratings": [
                 {"rater_id": "a", "blind_id": "sample-0001", "criterion": "speaker_identity", "score": 4},
                 {"rater_id": "b", "blind_id": "sample-0001", "criterion": "speaker_identity", "score": 5},
@@ -65,6 +67,33 @@ class ListeningPackTests(unittest.TestCase):
             aggregate_listening_results(review, reveal, ratings)
         partial = aggregate_listening_results(review, reveal, ratings, allow_incomplete=True)
         self.assertEqual(partial["coverage"]["status"], "incomplete")
+
+    def test_expected_rater_with_zero_submissions_remains_visible(self) -> None:
+        samples = [
+            {"sample_id": "base-1", "candidate_id": "base", "prompt_id": "p1", "audio_path": "base.wav"},
+            {"sample_id": "adapter-1", "candidate_id": "adapter", "prompt_id": "p1", "audio_path": "adapter.wav"},
+        ]
+        review, reveal = build_blind_pack(samples, ["speaker_identity"], seed=42)
+        ratings = {
+            "scale": {"min": 1, "max": 5},
+            "expected_rater_ids": ["a", "never-submitted"],
+            "ratings": [
+                {"rater_id": "a", "blind_id": "sample-0001", "criterion": "speaker_identity", "score": 4},
+                {"rater_id": "a", "blind_id": "sample-0002", "criterion": "speaker_identity", "score": 3},
+            ],
+        }
+        partial = aggregate_listening_results(review, reveal, ratings, allow_incomplete=True)
+        self.assertEqual(partial["expected_rater_count"], 2)
+        self.assertEqual(partial["rater_count"], 1)
+        self.assertEqual(partial["coverage"]["missing_rating_count"], 2)
+
+    def test_rejects_mixed_audio_extensions_that_can_unblind_candidates(self) -> None:
+        samples = [
+            {"sample_id": "base-1", "candidate_id": "base", "prompt_id": "p1", "audio_path": "base.wav"},
+            {"sample_id": "adapter-1", "candidate_id": "adapter", "prompt_id": "p1", "audio_path": "adapter.mp3"},
+        ]
+        with self.assertRaisesRegex(ValueError, "same extension"):
+            build_blind_pack(samples, ["speaker_identity"], seed=42)
 
     def test_stages_audio_under_identity_neutral_paths(self) -> None:
         with TemporaryDirectory() as source_dir, TemporaryDirectory() as output_dir:
@@ -85,6 +114,28 @@ class ListeningPackTests(unittest.TestCase):
             result = stage_blind_audio(review, reveal, Path(output_dir))
             self.assertEqual(result["file_count"], 2)
             self.assertTrue(all((Path(output_dir) / row["audio_path"]).is_file() for row in result["files"]))
+
+    def test_staging_refuses_to_overwrite_different_audio(self) -> None:
+        with TemporaryDirectory() as source_dir, TemporaryDirectory() as output_dir:
+            base = Path(source_dir) / "base.wav"
+            adapter = Path(source_dir) / "adapter.wav"
+            base.write_bytes(b"base-audio")
+            adapter.write_bytes(b"adapter-audio")
+            samples = [
+                {"sample_id": "base-1", "candidate_id": "base", "prompt_id": "p1", "audio_path": str(base)},
+                {
+                    "sample_id": "adapter-1",
+                    "candidate_id": "adapter",
+                    "prompt_id": "p1",
+                    "audio_path": str(adapter),
+                },
+            ]
+            review, reveal = build_blind_pack(samples, ["speaker_identity"], seed=42)
+            destination = Path(output_dir) / review["samples"][0]["audio_path"]
+            destination.parent.mkdir(parents=True)
+            destination.write_bytes(b"stale-audio")
+            with self.assertRaisesRegex(ValueError, "different content"):
+                stage_blind_audio(review, reveal, Path(output_dir))
 
 
 if __name__ == "__main__":

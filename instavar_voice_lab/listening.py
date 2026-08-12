@@ -27,6 +27,9 @@ def build_blind_pack(samples: list[dict[str, Any]], criteria: list[str], *, seed
             raise ValueError(f"sample {index} is missing: {', '.join(sorted(missing))}")
     if not criteria or any(not isinstance(value, str) or not value.strip() for value in criteria):
         raise ValueError("criteria must contain non-empty strings")
+    suffixes = {Path(str(sample["audio_path"])).suffix.lower() for sample in samples}
+    if len(suffixes) != 1:
+        raise ValueError("all blind-review audio files must use the same extension to avoid candidate leakage")
 
     randomized = list(samples)
     random.Random(seed).shuffle(randomized)
@@ -90,6 +93,8 @@ def stage_blind_audio(review: dict[str, Any], reveal: dict[str, Any], output_roo
         raise ValueError("review and reveal documents must cover the same blind ids")
 
     staged = []
+    if output_root.is_symlink():
+        raise ValueError(f"blind audio output root must not be a symlink: {output_root}")
     for blind_id in sorted(review_paths):
         relative = Path(str(review_paths[blind_id]))
         if relative.is_absolute() or ".." in relative.parts:
@@ -98,8 +103,21 @@ def stage_blind_audio(review: dict[str, Any], reveal: dict[str, Any], output_roo
         if not source.is_file():
             raise ValueError(f"source audio does not exist for {blind_id}: {source}")
         destination = output_root / relative
+        current = output_root
+        for part in relative.parts[:-1]:
+            current = current / part
+            if current.is_symlink():
+                raise ValueError(f"blind audio destination parent must not be a symlink: {current}")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
+        source_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        if destination.is_symlink():
+            raise ValueError(f"blind audio destination must not be a symlink: {destination}")
+        if destination.exists():
+            destination_digest = hashlib.sha256(destination.read_bytes()).hexdigest()
+            if destination_digest != source_digest:
+                raise ValueError(f"blind audio destination already exists with different content: {destination}")
+        else:
+            shutil.copyfile(source, destination)
         digest = hashlib.sha256(destination.read_bytes()).hexdigest()
         staged.append(
             {
@@ -169,6 +187,21 @@ def aggregate_listening_results(
     maximum = scale.get("max")
     if not isinstance(minimum, (int, float)) or not isinstance(maximum, (int, float)) or minimum >= maximum:
         raise ValueError("ratings scale must contain numeric min smaller than max")
+    expected_rater_values = ratings_document.get("expected_rater_ids")
+    if expected_rater_values is None and not allow_incomplete:
+        raise ValueError("ratings document must declare expected_rater_ids for a complete matrix")
+    if expected_rater_values is not None:
+        if (
+            not isinstance(expected_rater_values, list)
+            or not expected_rater_values
+            or any(not isinstance(value, str) or not value.strip() for value in expected_rater_values)
+        ):
+            raise ValueError("expected_rater_ids must be a non-empty array of strings")
+        expected_rater_ids = {value.strip() for value in expected_rater_values}
+        if len(expected_rater_ids) != len(expected_rater_values):
+            raise ValueError("expected_rater_ids must be unique")
+    else:
+        expected_rater_ids = set()
 
     mapping = {
         row["blind_id"]: row
@@ -211,9 +244,16 @@ def aggregate_listening_results(
         agreement_values[criterion][blind_id].append(float(score))
         rater_ids.add(rater_id)
 
+    if expected_rater_ids:
+        unexpected_raters = sorted(rater_ids - expected_rater_ids)
+        if unexpected_raters:
+            raise ValueError(f"ratings contain undeclared raters: {', '.join(unexpected_raters)}")
+    else:
+        expected_rater_ids = set(rater_ids)
+
     expected_keys = {
         (rater_id, blind_id, criterion)
-        for rater_id in rater_ids
+        for rater_id in expected_rater_ids
         for blind_id in review_blind_ids
         for criterion in criteria
     }
@@ -265,6 +305,7 @@ def aggregate_listening_results(
         "revealed": True,
         "rating_scale": {"min": minimum, "max": maximum},
         "rater_count": len(rater_ids),
+        "expected_rater_count": len(expected_rater_ids),
         "rating_count": len(ratings),
         "coverage": {
             "status": "complete" if not missing_keys else "incomplete",

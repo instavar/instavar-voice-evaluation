@@ -116,6 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="compare baseline and adapted observations paired by prompt and seed",
     )
     matched.add_argument("observations", type=Path)
+    matched.add_argument("--plan", type=Path, required=True)
     matched.add_argument("--baseline", required=True)
     matched.add_argument("--adapted", required=True)
     matched.add_argument("--output", type=Path, required=True)
@@ -261,6 +262,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("objective observations must be a JSON array")
             result = compare_matched_candidates(
                 rows,
+                plan=_read_json(args.plan),
                 baseline_candidate_id=args.baseline,
                 adapted_candidate_id=args.adapted,
                 seed=args.seed,
