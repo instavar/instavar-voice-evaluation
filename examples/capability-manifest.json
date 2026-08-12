@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.1.0",
+  "schema_version": "1.2.0",
   "repository": {
     "slug": "instavar/example-tts-adapter",
     "url": "https://github.com/instavar/example-tts-adapter",
@@ -18,7 +18,80 @@
           "ref": "reports/example-run.md",
           "claim": "A real-model LoRA run saved, reloaded, and generated a valid held-out sample."
         }
-      ]
+      ],
+      "lifecycle": {
+        "corpus_audit": {
+          "status": "validated",
+          "evidence": [
+            {
+              "level": "validated",
+              "ref": "reports/example-run.md",
+              "claim": "The grouped train, validation, and test manifests passed the corpus audit."
+            }
+          ],
+          "boundary": "Manifest integrity and split isolation passed; transcript accuracy remains separately unverified."
+        },
+        "training": {
+          "status": "validated",
+          "evidence": [
+            {
+              "level": "validated",
+              "ref": "reports/example-run.md",
+              "claim": "A real-model bounded LoRA run completed with finite loss."
+            }
+          ],
+          "boundary": "A bounded run does not establish convergence or quality improvement."
+        },
+        "checkpoint_save": {
+          "status": "validated",
+          "evidence": [
+            {
+              "level": "validated",
+              "ref": "reports/example-run.md",
+              "claim": "The adapter was saved and hashed."
+            }
+          ],
+          "boundary": "Artifact creation does not establish reload correctness."
+        },
+        "fresh_process_reload": {
+          "status": "validated",
+          "evidence": [
+            {
+              "level": "validated",
+              "ref": "reports/example-run.md",
+              "claim": "A fresh process loaded the saved adapter."
+            }
+          ],
+          "boundary": "One reload does not establish long-run runtime stability."
+        },
+        "held_out_inference": {
+          "status": "validated",
+          "evidence": [
+            {
+              "level": "validated",
+              "ref": "reports/example-run.md",
+              "claim": "The reloaded adapter generated a valid held-out WAV."
+            }
+          ],
+          "boundary": "Signal validity does not establish perceptual quality."
+        },
+        "evaluation": {
+          "status": "smoke_tested",
+          "evidence": [
+            {
+              "level": "smoke_tested",
+              "ref": "reports/example-run.md",
+              "claim": "The frozen objective suite completed."
+            }
+          ],
+          "boundary": "Objective proxies do not establish human preference."
+        },
+        "packaging": {
+          "status": "blocked",
+          "evidence": [],
+          "boundary": "Packaging is blocked pending rights review and complete listening evidence."
+        }
+      }
     },
     "full_sft": {
       "status": "unsupported",
@@ -61,7 +134,13 @@
       "sha256": "79491bec271c0aa1ea1b7dd92dd976476959f1607859a67451652f7c12e56a45"
     },
     "objective_metrics": ["invalid_output_rate", "real_time_factor"],
-    "listening_criteria": ["speaker_identity", "cadence_variation"]
+    "listening_criteria": ["speaker_identity", "cadence_variation"],
+    "matched_comparison": {
+      "status": "partial",
+      "baseline_candidate": "base-model",
+      "adapted_candidate": "selected-adapter",
+      "blockers": ["Blind listening ratings are incomplete."]
+    }
   },
   "rights": {
     "code": "Record the pinned code license before use.",

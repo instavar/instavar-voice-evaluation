@@ -106,6 +106,7 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
     seen: set[str] = set()
     per_candidate: dict[str, dict[str, Any]] = {}
     per_sample: list[dict[str, Any]] = []
+    evidence_signatures: dict[str, set[tuple[str, str]]] = {}
 
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
@@ -159,6 +160,9 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
                 raise ValueError(f"observation {index} evidence.{kind}.extractor must be non-empty")
             if not isinstance(record.get("revision"), str) or not record["revision"].strip():
                 raise ValueError(f"observation {index} evidence.{kind}.revision must be non-empty")
+            evidence_signatures.setdefault(kind, set()).add(
+                (record["extractor"].strip(), record["revision"].strip())
+            )
         if row["valid"]:
             candidate["valid"] += 1
 
@@ -236,6 +240,16 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
         "evaluation_scope": "objective_proxies_from_versioned_external_observations",
         "proves_perceptual_quality": False,
         "bootstrap_seed": seed,
+        "metric_provenance": {
+            kind: {
+                "consistent": len(signatures) == 1,
+                "extractors": [
+                    {"extractor": extractor, "revision": revision}
+                    for extractor, revision in sorted(signatures)
+                ],
+            }
+            for kind, signatures in sorted(evidence_signatures.items())
+        },
         "candidates": candidates,
         "samples": per_sample,
     }

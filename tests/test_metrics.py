@@ -53,6 +53,24 @@ class MetricTests(unittest.TestCase):
         self.assertNotIn("composite_score", result)
         self.assertFalse(result["proves_perceptual_quality"])
 
+    def test_reports_mixed_metric_provenance_instead_of_hiding_it(self) -> None:
+        rows = []
+        for revision in ("rev-1", "rev-2"):
+            rows.append(
+                {
+                    "sample_id": revision,
+                    "candidate_id": "adapter",
+                    "prompt_id": revision,
+                    "requested_text": "hello",
+                    "hypothesis_text": "hello",
+                    "valid": True,
+                    "evidence": {"asr": {"extractor": "test-asr", "revision": revision}},
+                }
+            )
+        result = score_objective_observations(rows)
+        self.assertFalse(result["metric_provenance"]["asr"]["consistent"])
+        self.assertEqual(len(result["metric_provenance"]["asr"]["extractors"]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

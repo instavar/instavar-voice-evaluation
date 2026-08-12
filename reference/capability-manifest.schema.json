@@ -15,7 +15,7 @@
     "known_gaps"
   ],
   "properties": {
-    "schema_version": { "enum": ["1.0.0", "1.1.0"] },
+    "schema_version": { "enum": ["1.0.0", "1.1.0", "1.2.0"] },
     "repository": {
       "type": "object",
       "additionalProperties": false,
@@ -95,7 +95,8 @@
           "type": "array",
           "minItems": 1,
           "items": { "type": "string", "minLength": 1 }
-        }
+        },
+        "matched_comparison": { "$ref": "#/$defs/matchedComparison" }
       }
     },
     "rights": {
@@ -117,7 +118,7 @@
   "allOf": [
     {
       "if": {
-        "properties": { "schema_version": { "const": "1.1.0" } },
+        "properties": { "schema_version": { "enum": ["1.1.0", "1.2.0"] } },
         "required": ["schema_version"]
       },
       "then": {
@@ -139,6 +140,17 @@
               ]
             }
           }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "schema_version": { "const": "1.2.0" } },
+        "required": ["schema_version"]
+      },
+      "then": {
+        "properties": {
+          "evaluation": { "required": ["prompt_pack", "objective_metrics", "listening_criteria", "matched_comparison"] }
         }
       }
     }
@@ -197,6 +209,62 @@
         }
       }
     },
+    "lifecycleStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evidence", "boundary"],
+      "properties": {
+        "status": {
+          "enum": [
+            "not_recorded",
+            "repository_declared",
+            "smoke_tested",
+            "validated",
+            "negative_result",
+            "blocked"
+          ]
+        },
+        "evidence": { "$ref": "#/$defs/evidence" },
+        "boundary": { "type": "string", "minLength": 1 }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "corpus_audit",
+        "training",
+        "checkpoint_save",
+        "fresh_process_reload",
+        "held_out_inference",
+        "evaluation",
+        "packaging"
+      ],
+      "properties": {
+        "corpus_audit": { "$ref": "#/$defs/lifecycleStage" },
+        "training": { "$ref": "#/$defs/lifecycleStage" },
+        "checkpoint_save": { "$ref": "#/$defs/lifecycleStage" },
+        "fresh_process_reload": { "$ref": "#/$defs/lifecycleStage" },
+        "held_out_inference": { "$ref": "#/$defs/lifecycleStage" },
+        "evaluation": { "$ref": "#/$defs/lifecycleStage" },
+        "packaging": { "$ref": "#/$defs/lifecycleStage" }
+      }
+    },
+    "matchedComparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "baseline_candidate", "adapted_candidate", "blockers"],
+      "properties": {
+        "status": { "enum": ["not_run", "partial", "complete", "blocked"] },
+        "baseline_candidate": { "type": "string", "minLength": 1 },
+        "adapted_candidate": { "type": "string", "minLength": 1 },
+        "report": { "type": "string", "minLength": 1 },
+        "blockers": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "capability": {
       "type": "object",
       "additionalProperties": false,
@@ -204,7 +272,8 @@
       "properties": {
         "status": { "$ref": "#/$defs/capabilityStatus" },
         "evidence": { "$ref": "#/$defs/evidence" },
-        "notes": { "type": "string" }
+        "notes": { "type": "string" },
+        "lifecycle": { "$ref": "#/$defs/lifecycle" }
       }
     }
   }

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from instavar_voice_lab.listening import aggregate_listening_results, build_blind_pack
+from instavar_voice_lab.listening import aggregate_listening_results, build_blind_pack, stage_blind_audio
 
 
 class ListeningPackTests(unittest.TestCase):
@@ -17,6 +19,9 @@ class ListeningPackTests(unittest.TestCase):
         review, reveal = first
         self.assertTrue(review["blind"])
         self.assertNotIn("candidate_id", review["samples"][0])
+        self.assertNotIn("base", review["samples"][0]["audio_path"])
+        self.assertNotIn("adapter", review["samples"][0]["audio_path"])
+        self.assertIn("source_audio_path", reveal["mapping"][0])
         self.assertEqual(len(reveal["review_sha256"]), 64)
         self.assertEqual(len(reveal["mapping"]), 2)
 
@@ -40,6 +45,46 @@ class ListeningPackTests(unittest.TestCase):
         self.assertEqual(set(result["candidates"]), {"base", "adapter"})
         self.assertNotIn("composite_score", result)
         self.assertIsNotNone(result["agreement"]["speaker_identity"]["krippendorff_alpha_interval"])
+        self.assertEqual(result["coverage"]["status"], "complete")
+
+    def test_rejects_incomplete_rating_matrix_by_default(self) -> None:
+        samples = [
+            {"sample_id": "base-1", "candidate_id": "base", "prompt_id": "p1", "audio_path": "base.wav"},
+            {"sample_id": "adapter-1", "candidate_id": "adapter", "prompt_id": "p1", "audio_path": "adapter.wav"},
+        ]
+        review, reveal = build_blind_pack(samples, ["speaker_identity"], seed=42)
+        ratings = {
+            "scale": {"min": 1, "max": 5},
+            "ratings": [
+                {"rater_id": "a", "blind_id": "sample-0001", "criterion": "speaker_identity", "score": 4},
+                {"rater_id": "b", "blind_id": "sample-0001", "criterion": "speaker_identity", "score": 5},
+                {"rater_id": "a", "blind_id": "sample-0002", "criterion": "speaker_identity", "score": 3},
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "ratings matrix is incomplete"):
+            aggregate_listening_results(review, reveal, ratings)
+        partial = aggregate_listening_results(review, reveal, ratings, allow_incomplete=True)
+        self.assertEqual(partial["coverage"]["status"], "incomplete")
+
+    def test_stages_audio_under_identity_neutral_paths(self) -> None:
+        with TemporaryDirectory() as source_dir, TemporaryDirectory() as output_dir:
+            base = Path(source_dir) / "base.wav"
+            adapter = Path(source_dir) / "adapter.wav"
+            base.write_bytes(b"base-audio")
+            adapter.write_bytes(b"adapter-audio")
+            samples = [
+                {"sample_id": "base-1", "candidate_id": "base", "prompt_id": "p1", "audio_path": str(base)},
+                {
+                    "sample_id": "adapter-1",
+                    "candidate_id": "adapter",
+                    "prompt_id": "p1",
+                    "audio_path": str(adapter),
+                },
+            ]
+            review, reveal = build_blind_pack(samples, ["speaker_identity"], seed=42)
+            result = stage_blind_audio(review, reveal, Path(output_dir))
+            self.assertEqual(result["file_count"], 2)
+            self.assertTrue(all((Path(output_dir) / row["audio_path"]).is_file() for row in result["files"]))
 
 
 if __name__ == "__main__":

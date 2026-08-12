@@ -51,6 +51,24 @@ RUNTIME_PROFILES = {
 }
 RUNTIME_INTERFACES = {"python", "cli", "http", "grpc"}
 RUNTIME_CONFORMANCE_STATUSES = {"not_run", "smoke_tested", "validated", "negative_result"}
+LIFECYCLE_STAGES = {
+    "corpus_audit",
+    "training",
+    "checkpoint_save",
+    "fresh_process_reload",
+    "held_out_inference",
+    "evaluation",
+    "packaging",
+}
+LIFECYCLE_STAGE_STATUSES = {
+    "not_recorded",
+    "repository_declared",
+    "smoke_tested",
+    "validated",
+    "negative_result",
+    "blocked",
+}
+MATCHED_COMPARISON_STATUSES = {"not_run", "partial", "complete", "blocked"}
 
 
 @dataclass(frozen=True)
@@ -124,8 +142,8 @@ def validate_capability_manifest(document: Any) -> list[ContractError]:
         errors,
     )
     schema_version = root.get("schema_version")
-    if schema_version not in {"1.0.0", "1.1.0"}:
-        errors.append(ContractError("$.schema_version", "must equal 1.0.0 or 1.1.0"))
+    if schema_version not in {"1.0.0", "1.1.0", "1.2.0"}:
+        errors.append(ContractError("$.schema_version", "must equal 1.0.0, 1.1.0, or 1.2.0"))
 
     repository = _mapping(root.get("repository"), "$.repository", errors)
     _required(repository, {"slug", "url", "evidence_revision"}, "$.repository", errors)
@@ -155,6 +173,28 @@ def validate_capability_manifest(document: Any) -> list[ContractError]:
         evidence = _evidence(capability.get("evidence"), f"{capability_path}.evidence", errors)
         if status in {"supported", "experimental"} and not evidence:
             errors.append(ContractError(f"{capability_path}.evidence", "is required for supported or experimental capabilities"))
+        if schema_version == "1.2.0" and status in {"supported", "experimental"}:
+            lifecycle = _mapping(capability.get("lifecycle"), f"{capability_path}.lifecycle", errors)
+            _required(lifecycle, LIFECYCLE_STAGES, f"{capability_path}.lifecycle", errors)
+            for stage in sorted(LIFECYCLE_STAGES):
+                stage_path = f"{capability_path}.lifecycle.{stage}"
+                stage_record = _mapping(lifecycle.get(stage), stage_path, errors)
+                _required(stage_record, {"status", "evidence", "boundary"}, stage_path, errors)
+                stage_status = _enum(
+                    stage_record.get("status"),
+                    LIFECYCLE_STAGE_STATUSES,
+                    f"{stage_path}.status",
+                    errors,
+                )
+                stage_evidence = _evidence(stage_record.get("evidence"), f"{stage_path}.evidence", errors)
+                _nonempty_string(stage_record.get("boundary"), f"{stage_path}.boundary", errors)
+                if stage_status not in {"not_recorded", "blocked"} and not stage_evidence:
+                    errors.append(
+                        ContractError(
+                            f"{stage_path}.evidence",
+                            "is required when a lifecycle stage claims repository or runtime evidence",
+                        )
+                    )
 
     runtimes = _list(root.get("runtimes"), "$.runtimes", errors)
     runtime_ids: set[str] = set()
@@ -173,7 +213,7 @@ def validate_capability_manifest(document: Any) -> list[ContractError]:
         evidence = _evidence(runtime.get("evidence"), f"{runtime_path}.evidence", errors)
         if status == "supported" and not evidence:
             errors.append(ContractError(f"{runtime_path}.evidence", "is required for a supported runtime"))
-        if schema_version == "1.1.0":
+        if schema_version in {"1.1.0", "1.2.0"}:
             _required(
                 runtime,
                 {"profile", "device", "interface", "precision", "batching", "conformance"},
@@ -245,6 +285,57 @@ def validate_capability_manifest(document: Any) -> list[ContractError]:
             errors.append(ContractError(f"$.evaluation.{name}", "must not be empty"))
         for index, value in enumerate(values):
             _nonempty_string(value, f"$.evaluation.{name}[{index}]", errors)
+
+    if schema_version == "1.2.0":
+        comparison = _mapping(evaluation.get("matched_comparison"), "$.evaluation.matched_comparison", errors)
+        _required(
+            comparison,
+            {"status", "baseline_candidate", "adapted_candidate", "blockers"},
+            "$.evaluation.matched_comparison",
+            errors,
+        )
+        comparison_status = _enum(
+            comparison.get("status"),
+            MATCHED_COMPARISON_STATUSES,
+            "$.evaluation.matched_comparison.status",
+            errors,
+        )
+        baseline_candidate = _nonempty_string(
+            comparison.get("baseline_candidate"),
+            "$.evaluation.matched_comparison.baseline_candidate",
+            errors,
+        )
+        adapted_candidate = _nonempty_string(
+            comparison.get("adapted_candidate"),
+            "$.evaluation.matched_comparison.adapted_candidate",
+            errors,
+        )
+        if baseline_candidate and baseline_candidate == adapted_candidate:
+            errors.append(
+                ContractError(
+                    "$.evaluation.matched_comparison.adapted_candidate",
+                    "must differ from baseline_candidate",
+                )
+            )
+        blockers = _list(comparison.get("blockers"), "$.evaluation.matched_comparison.blockers", errors)
+        for index, value in enumerate(blockers):
+            _nonempty_string(value, f"$.evaluation.matched_comparison.blockers[{index}]", errors)
+        if comparison_status == "complete":
+            _nonempty_string(comparison.get("report"), "$.evaluation.matched_comparison.report", errors)
+            if blockers:
+                errors.append(
+                    ContractError(
+                        "$.evaluation.matched_comparison.blockers",
+                        "must be empty for a complete comparison",
+                    )
+                )
+        elif comparison_status in {"partial", "blocked"} and not blockers:
+            errors.append(
+                ContractError(
+                    "$.evaluation.matched_comparison.blockers",
+                    "must explain a partial or blocked comparison",
+                )
+            )
 
     rights = _mapping(root.get("rights"), "$.rights", errors)
     _required(rights, {"code", "weights", "dataset", "generated_output"}, "$.rights", errors)

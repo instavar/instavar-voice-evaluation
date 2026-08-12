@@ -34,6 +34,18 @@ class ContractTests(unittest.TestCase):
         errors = validate_document("capability", manifest)
         self.assertTrue(any(error.path == "$.adaptation.lora.evidence" for error in errors))
 
+    def test_version_1_2_supported_capability_requires_full_lifecycle(self) -> None:
+        manifest = load_example("capability-manifest.json")
+        del manifest["adaptation"]["lora"]["lifecycle"]["packaging"]
+        errors = validate_document("capability", manifest)
+        self.assertTrue(any(error.path.endswith("lifecycle.packaging") for error in errors))
+
+    def test_version_1_2_partial_comparison_requires_blocker(self) -> None:
+        manifest = load_example("capability-manifest.json")
+        manifest["evaluation"]["matched_comparison"]["blockers"] = []
+        errors = validate_document("capability", manifest)
+        self.assertTrue(any(error.path.endswith("matched_comparison.blockers") for error in errors))
+
     def test_duplicate_runtime_identifier_is_rejected(self) -> None:
         manifest = load_example("capability-manifest.json")
         manifest["runtimes"].append(deepcopy(manifest["runtimes"][0]))
