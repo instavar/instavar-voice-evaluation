@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "repository": {
     "slug": "instavar/example-tts-adapter",
     "url": "https://github.com/instavar/example-tts-adapter",
@@ -32,6 +32,19 @@
       "status": "supported",
       "artifact_mode": "adapter",
       "streaming": false,
+      "profile": "reference",
+      "device": "cuda",
+      "interface": "cli",
+      "precision": "bfloat16",
+      "batching": false,
+      "conformance": {
+        "status": "validated",
+        "clean_checkout": true,
+        "fresh_process": true,
+        "prompt_count": 7,
+        "seed_count": 3,
+        "report": "reports/example-run.md"
+      },
       "evidence": [
         {
           "level": "validated",

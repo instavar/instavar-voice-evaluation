@@ -11,6 +11,7 @@ from .corpus import audit_corpus
 from .lifecycle import run_lifecycle, validate_backend_spec
 from .listening import aggregate_listening_results, build_blind_pack
 from .metrics import score_objective_observations
+from .suite import build_generation_plan, check_suite_coverage, validate_prompt_pack
 
 
 def _read_json(path: Path):
@@ -108,6 +109,20 @@ def build_parser() -> argparse.ArgumentParser:
     lifecycle.add_argument("backend", type=Path)
     lifecycle.add_argument("experiment", type=Path)
     lifecycle.add_argument("--work-dir", type=Path, required=True)
+
+    prompt_pack = commands.add_parser("validate-prompt-pack", help="validate a frozen prompt pack")
+    prompt_pack.add_argument("path", type=Path)
+
+    plan = commands.add_parser("build-generation-plan", help="expand candidates, prompts, and seeds into a frozen plan")
+    plan.add_argument("prompt_pack", type=Path)
+    plan.add_argument("--candidate", action="append", required=True)
+    plan.add_argument("--seed", action="append", type=int)
+    plan.add_argument("--output", type=Path, required=True)
+
+    coverage = commands.add_parser("check-suite-coverage", help="fail when planned samples lack observations")
+    coverage.add_argument("plan", type=Path)
+    coverage.add_argument("observations", type=Path)
+    coverage.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -216,4 +231,40 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0 if result["status"] == "passed" else 1
+    if args.command == "validate-prompt-pack":
+        try:
+            errors = validate_prompt_pack(_read_json(args.path))
+        except (OSError, json.JSONDecodeError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        if errors:
+            for error in errors:
+                print(error, file=sys.stderr)
+            return 1
+        print(f"valid prompt pack: {args.path}")
+        return 0
+    if args.command == "build-generation-plan":
+        try:
+            result = build_generation_plan(
+                _read_json(args.prompt_pack),
+                args.candidate,
+                seeds=args.seed,
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0
+    if args.command == "check-suite-coverage":
+        try:
+            result = check_suite_coverage(_read_json(args.plan), _read_json(args.observations))
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0 if result["status"] == "passed" else 1
     raise AssertionError(f"unhandled command: {args.command}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

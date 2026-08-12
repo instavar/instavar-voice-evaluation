@@ -41,6 +41,16 @@ ADAPTATION_MODES = {
     "partial_sft",
     "prompt_adapter",
 }
+RUNTIME_PROFILES = {
+    "reference",
+    "optimized_cuda",
+    "apple_silicon",
+    "cpu_edge",
+    "server",
+    "experimental",
+}
+RUNTIME_INTERFACES = {"python", "cli", "http", "grpc"}
+RUNTIME_CONFORMANCE_STATUSES = {"not_run", "smoke_tested", "validated", "negative_result"}
 
 
 @dataclass(frozen=True)
@@ -113,8 +123,9 @@ def validate_capability_manifest(document: Any) -> list[ContractError]:
         "$",
         errors,
     )
-    if root.get("schema_version") != "1.0.0":
-        errors.append(ContractError("$.schema_version", "must equal 1.0.0"))
+    schema_version = root.get("schema_version")
+    if schema_version not in {"1.0.0", "1.1.0"}:
+        errors.append(ContractError("$.schema_version", "must equal 1.0.0 or 1.1.0"))
 
     repository = _mapping(root.get("repository"), "$.repository", errors)
     _required(repository, {"slug", "url", "evidence_revision"}, "$.repository", errors)
@@ -162,6 +173,64 @@ def validate_capability_manifest(document: Any) -> list[ContractError]:
         evidence = _evidence(runtime.get("evidence"), f"{runtime_path}.evidence", errors)
         if status == "supported" and not evidence:
             errors.append(ContractError(f"{runtime_path}.evidence", "is required for a supported runtime"))
+        if schema_version == "1.1.0":
+            _required(
+                runtime,
+                {"profile", "device", "interface", "precision", "batching", "conformance"},
+                runtime_path,
+                errors,
+            )
+            _enum(runtime.get("profile"), RUNTIME_PROFILES, f"{runtime_path}.profile", errors)
+            _nonempty_string(runtime.get("device"), f"{runtime_path}.device", errors)
+            _enum(runtime.get("interface"), RUNTIME_INTERFACES, f"{runtime_path}.interface", errors)
+            _nonempty_string(runtime.get("precision"), f"{runtime_path}.precision", errors)
+            if not isinstance(runtime.get("batching"), bool):
+                errors.append(ContractError(f"{runtime_path}.batching", "must be a boolean"))
+            conformance = _mapping(runtime.get("conformance"), f"{runtime_path}.conformance", errors)
+            _required(
+                conformance,
+                {"status", "clean_checkout", "fresh_process", "prompt_count", "seed_count"},
+                f"{runtime_path}.conformance",
+                errors,
+            )
+            conformance_status = _enum(
+                conformance.get("status"),
+                RUNTIME_CONFORMANCE_STATUSES,
+                f"{runtime_path}.conformance.status",
+                errors,
+            )
+            for name in ("clean_checkout", "fresh_process"):
+                if not isinstance(conformance.get(name), bool):
+                    errors.append(ContractError(f"{runtime_path}.conformance.{name}", "must be a boolean"))
+            for name in ("prompt_count", "seed_count"):
+                value = conformance.get(name)
+                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                    errors.append(ContractError(f"{runtime_path}.conformance.{name}", "must be a non-negative integer"))
+            report = conformance.get("report")
+            if conformance_status == "not_run":
+                if conformance.get("prompt_count") != 0 or conformance.get("seed_count") != 0:
+                    errors.append(
+                        ContractError(
+                            f"{runtime_path}.conformance",
+                            "not_run conformance must record zero prompts and seeds",
+                        )
+                    )
+            else:
+                _nonempty_string(report, f"{runtime_path}.conformance.report", errors)
+                if not isinstance(conformance.get("prompt_count"), int) or conformance.get("prompt_count", 0) < 1:
+                    errors.append(
+                        ContractError(
+                            f"{runtime_path}.conformance.prompt_count",
+                            "must be positive after a conformance run",
+                        )
+                    )
+                if not isinstance(conformance.get("seed_count"), int) or conformance.get("seed_count", 0) < 1:
+                    errors.append(
+                        ContractError(
+                            f"{runtime_path}.conformance.seed_count",
+                            "must be positive after a conformance run",
+                        )
+                    )
 
     evaluation = _mapping(root.get("evaluation"), "$.evaluation", errors)
     _required(evaluation, {"prompt_pack", "objective_metrics", "listening_criteria"}, "$.evaluation", errors)

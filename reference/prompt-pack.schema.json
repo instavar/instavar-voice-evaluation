@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/instavar/instavar-voice-evaluation/main/reference/prompt-pack.schema.json",
+  "title": "Instavar Voice frozen prompt pack",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "version",
+    "locale",
+    "purpose",
+    "reference_durations_seconds",
+    "generation",
+    "prompts",
+    "objective_metrics",
+    "listening_criteria",
+    "measurement_limits"
+  ],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$" },
+    "version": { "type": "string", "minLength": 1 },
+    "locale": { "type": "string", "minLength": 1 },
+    "purpose": { "type": "string", "minLength": 1 },
+    "reference_durations_seconds": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "number", "exclusiveMinimum": 0 }
+    },
+    "generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seeds_per_candidate",
+        "seeds",
+        "require_same_transcripts",
+        "require_frozen_generation_settings"
+      ],
+      "properties": {
+        "seeds_per_candidate": { "type": "integer", "minimum": 1 },
+        "seeds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 0 }
+        },
+        "require_same_transcripts": { "type": "boolean" },
+        "require_frozen_generation_settings": { "type": "boolean" }
+      }
+    },
+    "prompts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "category", "text"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$" },
+          "category": { "type": "string", "minLength": 1 },
+          "instruction": { "type": "string", "minLength": 1 },
+          "text": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "objective_metrics": { "$ref": "#/$defs/nonemptyUniqueStrings" },
+    "listening_criteria": { "$ref": "#/$defs/nonemptyUniqueStrings" },
+    "measurement_limits": { "$ref": "#/$defs/nonemptyUniqueStrings" }
+  },
+  "$defs": {
+    "nonemptyUniqueStrings": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

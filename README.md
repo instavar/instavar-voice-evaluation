@@ -14,7 +14,35 @@ The shared layer provides:
 - objective proxy scoring from versioned ASR, speaker-encoder, and runtime observations;
 - criterion-level listening aggregation with bootstrap intervals and interval agreement; and
 - a fail-closed lifecycle runner for model-specific preflight, training, inference, evaluation, and packaging;
+- a frozen candidate by prompt by seed generation plan with completeness accounting;
 - examples and unit tests for every contract.
+
+## Build and verify a multi-prompt generation plan
+
+The Singapore English pack freezes seven prompts and three explicit seeds. Build
+the complete matrix before generation so failed or omitted samples remain
+visible:
+
+```bash
+instavar-voice-eval validate-prompt-pack reference/singapore-english-v1.json
+instavar-voice-eval build-generation-plan reference/singapore-english-v1.json \
+  --candidate base-model \
+  --candidate selected-adapter \
+  --output evaluation/generation-plan.json
+```
+
+After every attempt has an objective-observation row, verify coverage:
+
+```bash
+instavar-voice-eval check-suite-coverage \
+  evaluation/generation-plan.json \
+  evaluation/objective-observations.json \
+  --output evaluation/suite-coverage.json
+```
+
+Coverage passes when every planned sample has exactly one observation, including
+failed generations recorded with `valid: false`. It does not convert signal,
+ASR, speaker, or runtime measurements into a perceptual quality claim.
 
 ## Validate contracts
 
@@ -41,6 +69,12 @@ instavar-voice-eval validate-repository /path/to/companion-repository
 ```
 
 The checked-in JSON Schemas provide editor and ecosystem interoperability. The Python validator adds semantic checks that are awkward or misleading in schema alone, including evidence requirements for supported capabilities, unique runtime identifiers, distinct corpus split hashes, baseline presence, and the ban on a universal composite evaluation score.
+
+Capability contract 1.1 adds deployment profiles, device, interface, precision,
+batching, and explicit runtime-conformance coverage. A runtime that has not run
+must record zero prompts and seeds. A completed smoke or validation must name
+its report and record the tested prompt and seed counts. This keeps upstream
+runtime availability separate from adapted-artifact evidence.
 
 Historical runs often predate the strict experiment and package contracts. Import them with the historical-run contract instead of inventing missing hashes. The record preserves stage-specific evidence and names the exact blockers that prevent migration into a complete experiment manifest or deployable artifact package.
 
