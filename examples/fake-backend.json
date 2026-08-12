@@ -1,6 +1,12 @@
 {
-  "schema_version": "1.1.0",
+  "schema_version": "1.2.0",
   "backend_id": "instavar-fake-backend",
+  "capability_binding": {
+    "manifest": "capability-manifest.json",
+    "adaptation": "lora",
+    "runtime_ids": ["pytorch"]
+  },
+  "required_environment": [],
   "commands": {
     "preflight": ["{python}", "-m", "instavar_voice_lab.fake_backend", "preflight"],
     "train": ["{python}", "-m", "instavar_voice_lab.fake_backend", "train"],

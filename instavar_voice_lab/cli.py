@@ -274,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "validate-backend":
         try:
-            errors = validate_backend_spec(_read_json(args.spec))
+            errors = validate_backend_spec(_read_json(args.spec), spec_path=args.spec)
         except (OSError, json.JSONDecodeError) as error:
             print(error, file=sys.stderr)
             return 2
