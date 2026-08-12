@@ -9,11 +9,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .contracts import validate_experiment_manifest
+from .contracts import validate_capability_manifest, validate_experiment_manifest
 
 
 STAGES = ("preflight", "train", "infer", "evaluate", "package")
 SENSITIVE_ENV_FRAGMENTS = ("secret", "token", "password", "api_key", "credential")
+RESERVED_ENV_NAMES = {
+    "INSTAVAR_VOICE_EXPERIMENT_MANIFEST",
+    "INSTAVAR_VOICE_STAGE",
+    "INSTAVAR_VOICE_STAGE_RESULT",
+    "INSTAVAR_VOICE_WORK_DIR",
+}
 
 
 def _now() -> str:
@@ -78,12 +84,70 @@ def _verify_artifact_records(records: list[dict[str, Any]], *, root: Path) -> No
             raise ValueError(f"lifecycle artifact changed after hashing: {record['path']}")
 
 
-def validate_backend_spec(spec: Any) -> list[str]:
+def _validate_capability_binding(spec: dict[str, Any], spec_path: Path | None, errors: list[str]) -> None:
+    starting_error_count = len(errors)
+    binding = spec.get("capability_binding")
+    if not isinstance(binding, dict):
+        errors.append("capability_binding must be an object")
+        return
+    manifest_text = binding.get("manifest")
+    adaptation = binding.get("adaptation")
+    runtime_ids = binding.get("runtime_ids")
+    if not isinstance(manifest_text, str) or not manifest_text:
+        errors.append("capability_binding.manifest must be a non-empty relative path")
+    else:
+        manifest_path = Path(manifest_text)
+        if manifest_path.is_absolute() or ".." in manifest_path.parts:
+            errors.append("capability_binding.manifest must be a safe relative path")
+    if not isinstance(adaptation, str) or not adaptation:
+        errors.append("capability_binding.adaptation must be a non-empty string")
+    if (
+        not isinstance(runtime_ids, list)
+        or not runtime_ids
+        or any(not isinstance(runtime_id, str) or not runtime_id for runtime_id in runtime_ids)
+    ):
+        errors.append("capability_binding.runtime_ids must be a non-empty string array")
+    elif len(runtime_ids) != len(set(runtime_ids)):
+        errors.append("capability_binding.runtime_ids must not contain duplicates")
+    if len(errors) > starting_error_count or spec_path is None:
+        return
+    manifest_path = spec_path.parent / manifest_text
+    if manifest_path.is_symlink():
+        errors.append("capability_binding.manifest must not be a symlink")
+        return
+    try:
+        if not manifest_path.resolve().is_relative_to(spec_path.parent.resolve()):
+            errors.append("capability_binding.manifest resolves outside the backend directory")
+            return
+        manifest = _read_json(manifest_path)
+    except (OSError, json.JSONDecodeError) as error:
+        errors.append(f"capability_binding.manifest could not be read: {error}")
+        return
+    contract_errors = validate_capability_manifest(manifest)
+    if contract_errors:
+        errors.append("capability_binding.manifest is invalid: " + "; ".join(str(error) for error in contract_errors))
+        return
+    adaptation_record = manifest.get("adaptation", {}).get(adaptation)
+    if not isinstance(adaptation_record, dict) or adaptation_record.get("status") not in {"supported", "experimental"}:
+        errors.append("capability_binding.adaptation must name a supported or experimental adaptation")
+    runtime_records = {
+        runtime.get("id"): runtime
+        for runtime in manifest.get("runtimes", [])
+        if isinstance(runtime, dict) and isinstance(runtime.get("id"), str)
+    }
+    for runtime_id in runtime_ids:
+        if runtime_id not in runtime_records:
+            errors.append(f"capability_binding.runtime_ids names an unknown runtime: {runtime_id}")
+        elif runtime_records[runtime_id].get("status") not in {"supported", "experimental", "unverified_for_adapter"}:
+            errors.append(f"capability_binding.runtime_ids names an unsupported runtime: {runtime_id}")
+
+
+def validate_backend_spec(spec: Any, *, spec_path: Path | None = None) -> list[str]:
     errors: list[str] = []
     if not isinstance(spec, dict):
         return ["backend spec must be an object"]
-    if spec.get("schema_version") not in {"1.0.0", "1.1.0"}:
-        errors.append("schema_version must equal 1.0.0 or 1.1.0")
+    if spec.get("schema_version") not in {"1.0.0", "1.1.0", "1.2.0"}:
+        errors.append("schema_version must equal 1.0.0, 1.1.0, or 1.2.0")
     if not isinstance(spec.get("backend_id"), str) or not spec["backend_id"].strip():
         errors.append("backend_id must be a non-empty string")
     commands = spec.get("commands")
@@ -124,6 +188,8 @@ def validate_backend_spec(spec: Any) -> list[str]:
         errors.append("environment must be an object when present")
     else:
         for name, value in environment.items():
+            if name in RESERVED_ENV_NAMES:
+                errors.append(f"environment.{name} is runner-owned and must not be overridden")
             if any(fragment in name.casefold() for fragment in SENSITIVE_ENV_FRAGMENTS):
                 errors.append(f"environment.{name} looks sensitive and must be supplied outside the spec")
             if not isinstance(value, str):
@@ -131,17 +197,48 @@ def validate_backend_spec(spec: Any) -> list[str]:
     timeouts = spec.get("timeout_seconds", {})
     if not isinstance(timeouts, dict):
         errors.append("timeout_seconds must be an object when present")
-    elif spec.get("schema_version") == "1.1.0":
+    elif spec.get("schema_version") in {"1.1.0", "1.2.0"}:
         for stage in STAGES:
             timeout = timeouts.get(stage)
             if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
                 errors.append(f"timeout_seconds.{stage} must be a positive number")
+    if spec.get("schema_version") == "1.2.0":
+        required_environment = spec.get("required_environment")
+        if not isinstance(required_environment, list):
+            errors.append("required_environment must be an array")
+        else:
+            names: list[str] = []
+            for index, requirement in enumerate(required_environment):
+                if not isinstance(requirement, dict):
+                    errors.append(f"required_environment[{index}] must be an object")
+                    continue
+                name = requirement.get("name")
+                purpose = requirement.get("purpose")
+                if (
+                    not isinstance(name, str)
+                    or not name
+                    or not name.isascii()
+                    or not name.replace("_", "").isalnum()
+                    or not name[0].isalpha()
+                ):
+                    errors.append(f"required_environment[{index}].name must be a portable environment variable name")
+                else:
+                    names.append(name)
+                    if name in RESERVED_ENV_NAMES:
+                        errors.append(f"required_environment[{index}].name is runner-owned")
+                if not isinstance(purpose, str) or not purpose.strip():
+                    errors.append(f"required_environment[{index}].purpose must be a non-empty string")
+            if len(names) != len(set(names)):
+                errors.append("required_environment names must not contain duplicates")
+            for name in sorted(set(names).intersection(environment)):
+                errors.append(f"required_environment and environment both declare {name}")
+        _validate_capability_binding(spec, spec_path, errors)
     return errors
 
 
 def run_lifecycle(spec_path: Path, experiment_path: Path, work_dir: Path) -> dict[str, Any]:
     spec = _read_json(spec_path)
-    errors = validate_backend_spec(spec)
+    errors = validate_backend_spec(spec, spec_path=spec_path)
     if errors:
         raise ValueError("; ".join(errors))
     experiment = _read_json(experiment_path)
@@ -149,6 +246,16 @@ def run_lifecycle(spec_path: Path, experiment_path: Path, work_dir: Path) -> dic
     if experiment_errors:
         raise ValueError("invalid experiment manifest: " + "; ".join(str(error) for error in experiment_errors))
     experiment_id = str(experiment["experiment_id"]).strip()
+    binding = spec.get("capability_binding")
+    if isinstance(binding, dict) and experiment.get("adaptation_mode") != binding.get("adaptation"):
+        raise ValueError("experiment adaptation_mode does not match capability_binding.adaptation")
+    missing_environment = [
+        requirement["name"]
+        for requirement in spec.get("required_environment", [])
+        if not os.environ.get(requirement["name"], "").strip()
+    ]
+    if missing_environment:
+        raise ValueError("missing required backend environment: " + ", ".join(sorted(missing_environment)))
 
     if work_dir.is_symlink():
         raise ValueError(f"lifecycle work directory must not be a symlink: {work_dir}")
@@ -252,6 +359,10 @@ def run_lifecycle(spec_path: Path, experiment_path: Path, work_dir: Path) -> dic
     result = {
         "schema_version": "1.0.0",
         "backend_id": spec["backend_id"],
+        "capability_binding": binding,
+        "required_environment": [
+            requirement["name"] for requirement in spec.get("required_environment", [])
+        ],
         "experiment_id": experiment_id,
         "status": lifecycle_status,
         "started_at": lifecycle_started,

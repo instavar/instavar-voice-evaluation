@@ -202,7 +202,14 @@ perceptual improvement.
 
 A backend specification supplies argument arrays for five model-specific stages: preflight, train, infer, evaluate, and package. Commands are executed directly without a shell. Every stage must return success, write its stage result, and produce all declared artifacts before the next stage runs.
 
-Backend specification 1.1 requires a positive timeout for every stage. The
+Backend specification 1.1 requires a positive timeout for every stage. Version
+1.2 additionally binds the recipe to one supported or experimental adaptation
+and one or more runtime IDs in a valid capability manifest. It declares every
+required non-secret environment input with a purpose, checks those inputs before
+creating the work directory, and rejects an experiment whose adaptation mode
+does not match the recipe. The runner never records required environment values.
+
+The
 runner also requires a new or empty non-symlink work directory, validates the
 complete experiment manifest before invoking a backend, rejects absolute or
 parent-traversing artifact paths, and refuses symlinked stage results or
