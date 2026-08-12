@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
+from instavar_voice_lab.cli import main
 from instavar_voice_lab.metrics import cosine_similarity, score_objective_observations, word_error_rate
-from instavar_voice_lab.speaker_references import reference_set_sha256, speaker_measurement_sha256
+from instavar_voice_lab.speaker_references import canonical_sha256, reference_set_sha256, speaker_measurement_sha256
 
 
 class MetricTests(unittest.TestCase):
@@ -61,8 +65,118 @@ class MetricTests(unittest.TestCase):
         self.assertEqual(candidate["silence_fraction"]["mean"], 0.1)
         self.assertEqual(candidate["clipping_fraction"]["mean"], 0.0)
         self.assertFalse(result["metric_provenance"]["asr"]["all_content_bound"])
+        reference_text = result["metric_provenance"]["asr"]["reference_text"]
+        self.assertEqual(reference_text["mode"], "declared_observation")
+        self.assertEqual(reference_text["plan_bound_reference_count"], 0)
+        self.assertFalse(reference_text["all_scored_references_plan_bound"])
         self.assertNotIn("composite_score", result)
         self.assertFalse(result["proves_perceptual_quality"])
+
+    def test_binds_asr_reference_text_to_generation_plan(self) -> None:
+        row = {
+            "sample_id": "adapter--p1--seed-42",
+            "candidate_id": "adapter",
+            "prompt_id": "p1",
+            "seed": 42,
+            "requested_text": "hello world",
+            "hypothesis_text": "hello world",
+            "valid": True,
+            "evidence": {"asr": {"extractor": "test-asr", "revision": "1"}},
+        }
+        plan = {
+            "schema_version": "1.0.0",
+            "samples": [
+                {
+                    "sample_id": row["sample_id"],
+                    "candidate_id": row["candidate_id"],
+                    "prompt_id": row["prompt_id"],
+                    "seed": row["seed"],
+                    "text": row["requested_text"],
+                }
+            ],
+        }
+        result = score_objective_observations([row], generation_plan=plan)
+        reference_text = result["metric_provenance"]["asr"]["reference_text"]
+        self.assertEqual(reference_text["mode"], "generation_plan")
+        self.assertEqual(reference_text["generation_plan_sha256"], canonical_sha256(plan))
+        self.assertEqual(reference_text["plan_bound_reference_count"], 1)
+        self.assertTrue(reference_text["all_scored_references_plan_bound"])
+        self.assertEqual(result["samples"][0]["diagnostics"]["asr_reference_text_binding"], "generation_plan")
+
+    def test_rejects_asr_reference_text_drift_from_generation_plan(self) -> None:
+        row = {
+            "sample_id": "adapter--p1--seed-42",
+            "candidate_id": "adapter",
+            "prompt_id": "p1",
+            "seed": 42,
+            "requested_text": "hello world",
+            "hypothesis_text": "hello world",
+            "valid": True,
+            "evidence": {"asr": {"extractor": "test-asr", "revision": "1"}},
+        }
+        plan = {
+            "schema_version": "1.0.0",
+            "samples": [
+                {
+                    "sample_id": row["sample_id"],
+                    "candidate_id": row["candidate_id"],
+                    "prompt_id": row["prompt_id"],
+                    "seed": row["seed"],
+                    "text": "different text",
+                }
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "requested_text"):
+            score_objective_observations([row], generation_plan=plan)
+        plan["samples"][0]["sample_id"] = "missing-sample"
+        with self.assertRaisesRegex(ValueError, "absent from the reference generation plan"):
+            score_objective_observations([row], generation_plan=plan)
+
+    def test_cli_binds_asr_reference_text_to_generation_plan(self) -> None:
+        row = {
+            "sample_id": "adapter--p1--seed-42",
+            "candidate_id": "adapter",
+            "prompt_id": "p1",
+            "seed": 42,
+            "requested_text": "hello world",
+            "hypothesis_text": "hello world",
+            "valid": True,
+            "evidence": {"asr": {"extractor": "test-asr", "revision": "1"}},
+        }
+        plan = {
+            "schema_version": "1.0.0",
+            "samples": [
+                {
+                    "sample_id": row["sample_id"],
+                    "candidate_id": row["candidate_id"],
+                    "prompt_id": row["prompt_id"],
+                    "seed": row["seed"],
+                    "text": row["requested_text"],
+                }
+            ],
+        }
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            observations_path = root / "observations.json"
+            plan_path = root / "generation-plan.json"
+            output_path = root / "scores.json"
+            observations_path.write_text(json.dumps([row]), encoding="utf-8")
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            self.assertEqual(
+                main(
+                    [
+                        "score-objective",
+                        str(observations_path),
+                        "--generation-plan",
+                        str(plan_path),
+                        "--output",
+                        str(output_path),
+                    ]
+                ),
+                0,
+            )
+            result = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(result["metric_provenance"]["asr"]["reference_text"]["mode"], "generation_plan")
 
     def test_reports_mixed_metric_provenance_instead_of_hiding_it(self) -> None:
         rows = []

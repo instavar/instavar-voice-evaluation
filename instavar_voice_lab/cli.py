@@ -204,6 +204,11 @@ def build_parser() -> argparse.ArgumentParser:
     objective.add_argument("observations", type=Path)
     objective.add_argument("--output", type=Path, required=True)
     objective.add_argument("--seed", type=int, default=20260812)
+    objective.add_argument(
+        "--generation-plan",
+        type=Path,
+        help="bind ASR requested_text references to live generation-plan samples",
+    )
 
     observation_contract = commands.add_parser(
         "validate-observations",
@@ -632,7 +637,11 @@ def main(argv: list[str] | None = None) -> int:
             rows = _read_json(args.observations)
             if not isinstance(rows, list):
                 raise ValueError("objective observations must be a JSON array")
-            result = score_objective_observations(rows, seed=args.seed)
+            result = score_objective_observations(
+                rows,
+                seed=args.seed,
+                generation_plan=_read_json(args.generation_plan) if args.generation_plan else None,
+            )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             print(error, file=sys.stderr)
             return 2

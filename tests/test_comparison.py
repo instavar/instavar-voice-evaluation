@@ -174,6 +174,9 @@ class MatchedComparisonTests(unittest.TestCase):
         self.assertEqual(result["validity"]["adapted_minus_baseline_invalid_output_rate"], 0.0)
         rtf = next(metric for metric in result["metrics"] if metric["metric"] == "real_time_factor")
         self.assertGreater(rtf["mean_directional_improvement"], 0)
+        reference_text = result["metric_provenance"]["asr"]["reference_text"]
+        self.assertEqual(reference_text["mode"], "generation_plan")
+        self.assertTrue(reference_text["all_scored_references_plan_bound"])
         self.assertFalse(result["proves_adaptation_benefit"])
 
     def test_rejects_missing_pair(self) -> None:
@@ -240,7 +243,9 @@ class MatchedComparisonTests(unittest.TestCase):
         ]
         _, reference_plan = self.assignment_plan(rows)
         reference_plan["generation_plan_sha256"] = canonical_sha256(bound_plan)
-        reference_plan_payload = {key: value for key, value in reference_plan.items() if key != "assignment_plan_sha256"}
+        reference_plan_payload = {
+            key: value for key, value in reference_plan.items() if key != "assignment_plan_sha256"
+        }
         reference_plan["assignment_plan_sha256"] = canonical_sha256(reference_plan_payload)
         with self.assertRaisesRegex(ValueError, "missing plan-required metrics"):
             compare_matched_candidates(

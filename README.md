@@ -301,6 +301,17 @@ instavar-voice-eval score-objective examples/objective-observations.json \
   --seed 20260812
 ```
 
+When the observations come from a preregistered generation plan, bind that plan
+while scoring so the report can distinguish authoritative generation text from
+a reference string copied into an observation:
+
+```bash
+instavar-voice-eval score-objective examples/objective-observations.json \
+  --generation-plan evaluation/generation-plan.json \
+  --output objective-results.json \
+  --seed 20260812
+```
+
 The result reports ASR word error rate, speaker-embedding cosine similarity,
 invalid-output rate, real-time factor, generation time, audio duration, sample
 rate, silence fraction, clipping fraction, and peak memory independently.
@@ -314,6 +325,14 @@ speaker-reference identity observed for ASR, speaker encoding, and runtime
 probes. It counts fully content-bound and unbound evidence for each extractor
 kind. Mixed provenance remains visible in an ordinary score report and is
 rejected by the matched-comparison command.
+
+ASR reference-text provenance is reported separately. Without
+`--generation-plan`, word error rate uses the `requested_text` declared in each
+observation and reports `declared_observation`. With a matching plan, it reports
+`generation_plan`, the plan digest, and the number of scored references bound to
+that plan. The binding establishes which text was requested. It does not prove
+that the ASR transcript is correct, that the audio came from an honest TTS run,
+or that the speech is perceptually good.
 
 ## Bind runtime metrics to generation attempts
 

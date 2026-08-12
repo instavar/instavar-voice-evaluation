@@ -457,7 +457,9 @@ def compare_matched_candidates(
             raise ValueError(f"requested_text mismatch for prompt {key[0]}, seed {key[1]}")
 
     provenance = _provenance(selected)
-    scored = score_objective_observations(selected, seed=seed)
+    scored = score_objective_observations(selected, seed=seed, generation_plan=plan)
+    if "asr" in provenance:
+        provenance["asr"]["reference_text"] = scored["metric_provenance"]["asr"]["reference_text"]
     scored_by_id = {sample["sample_id"]: sample for sample in scored["samples"]}
     planned_by_id = {
         row["sample_id"]: row

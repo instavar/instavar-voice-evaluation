@@ -10,6 +10,7 @@ from .attempts import runtime_attempt_is_content_bound
 from .observations import validate_objective_observations
 from .speaker_references import (
     aggregate_reference_similarities,
+    canonical_sha256,
     cosine_similarity,
     speaker_measurement_is_content_bound,
     validate_speaker_reference_evidence,
@@ -94,10 +95,77 @@ def _metric_summary(values: list[float], *, seed: int) -> dict[str, Any] | None:
     }
 
 
-def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 20260812) -> dict[str, Any]:
+def _asr_reference_text_provenance(rows: list[dict[str, Any]], generation_plan: Any | None) -> dict[str, Any]:
+    observed = [row for row in rows if row.get("hypothesis_text") is not None]
+    scored = [row for row in observed if row.get("valid") is True]
+    if generation_plan is None:
+        return {
+            "mode": "declared_observation",
+            "generation_plan_sha256": None,
+            "observed_reference_count": len(observed),
+            "scored_reference_count": len(scored),
+            "plan_bound_reference_count": 0,
+            "all_scored_references_plan_bound": False if scored else None,
+            "evidence_boundary": (
+                "The scorer used requested_text declared by each observation. Content-bound ASR execution does not "
+                "independently verify that reference text."
+            ),
+        }
+    if not isinstance(generation_plan, dict) or generation_plan.get("schema_version") not in {"1.0.0", "1.1.0"}:
+        raise ValueError("ASR reference generation plan must be a version 1.0.0 or 1.1.0 object")
+    raw_samples = generation_plan.get("samples")
+    if not isinstance(raw_samples, list) or not raw_samples:
+        raise ValueError("ASR reference generation plan must contain samples")
+    planned_by_id: dict[str, dict[str, Any]] = {}
+    for index, planned in enumerate(raw_samples):
+        if not isinstance(planned, dict) or not isinstance(planned.get("sample_id"), str):
+            raise ValueError(f"ASR reference generation plan sample {index} must declare sample_id")
+        if planned["sample_id"] in planned_by_id:
+            raise ValueError(f"ASR reference generation plan duplicates sample_id: {planned['sample_id']}")
+        planned_by_id[planned["sample_id"]] = planned
+    for index, row in enumerate(observed):
+        planned = planned_by_id.get(row.get("sample_id"))
+        if planned is None:
+            raise ValueError(f"ASR observation {index} is absent from the reference generation plan")
+        mismatches = [
+            observation_field
+            for observation_field, plan_field in (
+                ("candidate_id", "candidate_id"),
+                ("prompt_id", "prompt_id"),
+                ("seed", "seed"),
+                ("requested_text", "text"),
+            )
+            if row.get(observation_field) != planned.get(plan_field)
+        ]
+        if mismatches:
+            raise ValueError(
+                f"ASR observation {row.get('sample_id')} does not match reference generation plan fields: "
+                + ", ".join(mismatches)
+            )
+    return {
+        "mode": "generation_plan",
+        "generation_plan_sha256": canonical_sha256(generation_plan),
+        "observed_reference_count": len(observed),
+        "scored_reference_count": len(scored),
+        "plan_bound_reference_count": len(scored),
+        "all_scored_references_plan_bound": True if scored else None,
+        "evidence_boundary": (
+            "The live generation plan binds requested_text to each scored sample. This establishes reference identity, "
+            "not ASR validity, perceptual quality, or honest model execution."
+        ),
+    }
+
+
+def score_objective_observations(
+    rows: list[dict[str, Any]],
+    *,
+    seed: int = 20260812,
+    generation_plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     contract_errors = validate_objective_observations(rows)
     if contract_errors:
         raise ValueError("; ".join(contract_errors))
+    asr_reference_text = _asr_reference_text_provenance(rows, generation_plan)
 
     required = {"sample_id", "candidate_id", "prompt_id", "requested_text", "valid"}
     seen: set[str] = set()
@@ -252,6 +320,7 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
             if not isinstance(hypothesis, str):
                 raise ValueError(f"observation {index} hypothesis_text must be a string")
             require_evidence("asr")
+            sample_result["diagnostics"]["asr_reference_text_binding"] = asr_reference_text["mode"]
             if row["valid"]:
                 value = word_error_rate(requested_text, hypothesis)
                 sample_result["metrics"]["asr_word_error_rate"] = value
@@ -410,6 +479,40 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
             eligible = int(coverage["eligible"])
             coverage["rate"] = coverage["observed"] / eligible if eligible else None
 
+    metric_provenance = {
+        kind: {
+            "consistent": len(signatures) == 1,
+            "extractors": [
+                {
+                    "extractor": extractor,
+                    "revision": revision,
+                    "extractor_artifact_set_sha256": artifact_sha or None,
+                    "reference_id": reference_id or None,
+                    "reference_audio_sha256": reference_audio_sha or None,
+                    "reference_transcript_sha256": reference_transcript_sha or None,
+                    "reference_aggregation": reference_aggregation or None,
+                }
+                for (
+                    extractor,
+                    revision,
+                    artifact_sha,
+                    reference_id,
+                    reference_audio_sha,
+                    reference_transcript_sha,
+                    reference_aggregation,
+                ) in sorted(signatures)
+            ],
+            "reference_set_sha256s": sorted(speaker_reference_sets) if kind == "speaker_encoder" else [],
+            "reference_set_count": len(speaker_reference_sets) if kind == "speaker_encoder" else 0,
+            "content_bound_count": evidence_content_binding[kind]["bound"],
+            "unbound_count": evidence_content_binding[kind]["unbound"],
+            "all_content_bound": evidence_content_binding[kind]["unbound"] == 0,
+        }
+        for kind, signatures in sorted(evidence_signatures.items())
+    }
+    if "asr" in metric_provenance:
+        metric_provenance["asr"]["reference_text"] = asr_reference_text
+
     return {
         "schema_version": "1.0.0",
         "evaluation_scope": "objective_proxies_from_versioned_external_observations",
@@ -424,37 +527,7 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
             "unversioned_sample_count": sum("observation_schema_version" not in row for row in rows),
         },
         "bootstrap_seed": seed,
-        "metric_provenance": {
-            kind: {
-                "consistent": len(signatures) == 1,
-                "extractors": [
-                    {
-                        "extractor": extractor,
-                        "revision": revision,
-                        "extractor_artifact_set_sha256": artifact_sha or None,
-                        "reference_id": reference_id or None,
-                        "reference_audio_sha256": reference_audio_sha or None,
-                        "reference_transcript_sha256": reference_transcript_sha or None,
-                        "reference_aggregation": reference_aggregation or None,
-                    }
-                    for (
-                        extractor,
-                        revision,
-                        artifact_sha,
-                        reference_id,
-                        reference_audio_sha,
-                        reference_transcript_sha,
-                        reference_aggregation,
-                    ) in sorted(signatures)
-                ],
-                "reference_set_sha256s": sorted(speaker_reference_sets) if kind == "speaker_encoder" else [],
-                "reference_set_count": len(speaker_reference_sets) if kind == "speaker_encoder" else 0,
-                "content_bound_count": evidence_content_binding[kind]["bound"],
-                "unbound_count": evidence_content_binding[kind]["unbound"],
-                "all_content_bound": evidence_content_binding[kind]["unbound"] == 0,
-            }
-            for kind, signatures in sorted(evidence_signatures.items())
-        },
+        "metric_provenance": metric_provenance,
         "candidates": candidates,
         "samples": per_sample,
     }
