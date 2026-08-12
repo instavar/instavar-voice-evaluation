@@ -146,6 +146,8 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
             "prompt_id": prompt_id,
             "valid": row["valid"],
             "metrics": {},
+            "diagnostics": {},
+            "excluded_quality_metrics": [],
             "evidence": row.get("evidence", {}),
         }
         evidence = row.get("evidence", {})
@@ -171,9 +173,12 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
             if not isinstance(hypothesis, str):
                 raise ValueError(f"observation {index} hypothesis_text must be a string")
             require_evidence("asr")
-            value = word_error_rate(requested_text, hypothesis)
-            sample_result["metrics"]["asr_word_error_rate"] = value
-            candidate["word_error_rate"].append(value)
+            if row["valid"]:
+                value = word_error_rate(requested_text, hypothesis)
+                sample_result["metrics"]["asr_word_error_rate"] = value
+                candidate["word_error_rate"].append(value)
+            else:
+                sample_result["excluded_quality_metrics"].append("asr_word_error_rate")
 
         reference_embedding = row.get("reference_speaker_embedding")
         candidate_embedding = row.get("speaker_embedding")
@@ -181,9 +186,12 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
             if not isinstance(reference_embedding, list) or not isinstance(candidate_embedding, list):
                 raise ValueError(f"observation {index} must provide both speaker embeddings as arrays")
             require_evidence("speaker_encoder")
-            value = cosine_similarity(reference_embedding, candidate_embedding)
-            sample_result["metrics"]["speaker_embedding_similarity"] = value
-            candidate["speaker_embedding_similarity"].append(value)
+            if row["valid"]:
+                value = cosine_similarity(reference_embedding, candidate_embedding)
+                sample_result["metrics"]["speaker_embedding_similarity"] = value
+                candidate["speaker_embedding_similarity"].append(value)
+            else:
+                sample_result["excluded_quality_metrics"].append("speaker_embedding_similarity")
 
         generation_seconds = _number(row, "generation_seconds")
         audio_duration_seconds = _number(row, "audio_duration_seconds")
@@ -198,9 +206,13 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
         if audio_duration_seconds is not None:
             if audio_duration_seconds <= 0:
                 raise ValueError(f"observation {index} audio_duration_seconds must be positive")
-            sample_result["metrics"]["audio_duration_seconds"] = audio_duration_seconds
-            candidate["audio_duration_seconds"].append(audio_duration_seconds)
-        if generation_seconds is not None and audio_duration_seconds is not None:
+            if row["valid"]:
+                sample_result["metrics"]["audio_duration_seconds"] = audio_duration_seconds
+                candidate["audio_duration_seconds"].append(audio_duration_seconds)
+            else:
+                sample_result["diagnostics"]["invalid_audio_duration_seconds"] = audio_duration_seconds
+                sample_result["excluded_quality_metrics"].append("audio_duration_seconds")
+        if row["valid"] and generation_seconds is not None and audio_duration_seconds is not None:
             value = generation_seconds / audio_duration_seconds
             sample_result["metrics"]["real_time_factor"] = value
             candidate["real_time_factor"].append(value)
@@ -238,6 +250,10 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
     return {
         "schema_version": "1.0.0",
         "evaluation_scope": "objective_proxies_from_versioned_external_observations",
+        "invalid_sample_policy": (
+            "Invalid samples contribute invalid-output rate and operational attempt metrics only. "
+            "They are excluded from ASR, speaker, audio-duration, and real-time-factor quality summaries."
+        ),
         "proves_perceptual_quality": False,
         "bootstrap_seed": seed,
         "metric_provenance": {

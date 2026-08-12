@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0.0",
+  "prompt_pack": {
+    "id": "instavar-singapore-english",
+    "version": "1.1.0",
+    "sha256": "97999765d5027f1d6b8a51d8e565c767285ef708922611b195d63d3e1184d66f"
+  },
+  "candidate_ids": ["base-model", "selected-adapter"],
+  "seeds": [42],
+  "prompt_count": 1,
+  "sample_count": 2,
+  "samples": [
+    {
+      "sample_id": "base-model--p001--seed-42",
+      "candidate_id": "base-model",
+      "prompt_id": "p001",
+      "category": "neutral_brief",
+      "seed": 42,
+      "text": "Please send the revised schedule by Friday afternoon.",
+      "expected_audio_path": "audio/base-model/p001/seed-42.wav"
+    },
+    {
+      "sample_id": "selected-adapter--p001--seed-42",
+      "candidate_id": "selected-adapter",
+      "prompt_id": "p001",
+      "category": "neutral_brief",
+      "seed": 42,
+      "text": "Please send the revised schedule by Friday afternoon.",
+      "expected_audio_path": "audio/selected-adapter/p001/seed-42.wav"
+    }
+  ],
+  "generation_requirements": {
+    "same_transcripts": true,
+    "frozen_generation_settings": true,
+    "record_failures_as_observations": true
+  }
+}

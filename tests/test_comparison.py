@@ -34,6 +34,30 @@ def observation(candidate_id: str, prompt_id: str, seed: int, *, valid: bool = T
     return row
 
 
+def generation_plan(rows: list[dict]) -> dict:
+    return {
+        "schema_version": "1.0.0",
+        "prompt_pack": {"id": "test-pack", "version": "1.0.0", "sha256": "a" * 64},
+        "candidate_ids": sorted({row["candidate_id"] for row in rows}),
+        "sample_count": len(rows),
+        "samples": [
+            {
+                "sample_id": row["sample_id"],
+                "candidate_id": row["candidate_id"],
+                "prompt_id": row["prompt_id"],
+                "seed": row["seed"],
+                "text": row["requested_text"],
+            }
+            for row in rows
+        ],
+        "generation_requirements": {
+            "same_transcripts": True,
+            "frozen_generation_settings": True,
+            "record_failures_as_observations": True,
+        },
+    }
+
+
 class MatchedComparisonTests(unittest.TestCase):
     def test_compares_exact_prompt_and_seed_pairs(self) -> None:
         rows = [
@@ -44,6 +68,7 @@ class MatchedComparisonTests(unittest.TestCase):
         ]
         result = compare_matched_candidates(
             rows,
+            plan=generation_plan(rows),
             baseline_candidate_id="base",
             adapted_candidate_id="adapter",
             seed=7,
@@ -57,23 +82,43 @@ class MatchedComparisonTests(unittest.TestCase):
     def test_rejects_missing_pair(self) -> None:
         rows = [observation("base", "p1", 42), observation("adapter", "p2", 42)]
         with self.assertRaisesRegex(ValueError, "identical prompt and seed coverage"):
-            compare_matched_candidates(rows, baseline_candidate_id="base", adapted_candidate_id="adapter")
+            compare_matched_candidates(
+                rows,
+                plan=generation_plan(rows),
+                baseline_candidate_id="base",
+                adapted_candidate_id="adapter",
+            )
 
     def test_rejects_transcript_mismatch(self) -> None:
         rows = [observation("base", "p1", 42), observation("adapter", "p1", 42)]
         rows[1]["requested_text"] = "different text"
         with self.assertRaisesRegex(ValueError, "requested_text mismatch"):
-            compare_matched_candidates(rows, baseline_candidate_id="base", adapted_candidate_id="adapter")
+            compare_matched_candidates(
+                rows,
+                plan=generation_plan(rows),
+                baseline_candidate_id="base",
+                adapted_candidate_id="adapter",
+            )
 
     def test_rejects_mixed_extractor_revisions(self) -> None:
         rows = [observation("base", "p1", 42), observation("adapter", "p1", 42)]
         rows[1]["evidence"]["asr"]["revision"] = "rev-2"
         with self.assertRaisesRegex(ValueError, "cannot mix extractor provenance"):
-            compare_matched_candidates(rows, baseline_candidate_id="base", adapted_candidate_id="adapter")
+            compare_matched_candidates(
+                rows,
+                plan=generation_plan(rows),
+                baseline_candidate_id="base",
+                adapted_candidate_id="adapter",
+            )
 
     def test_preserves_invalid_pair_in_validity_delta(self) -> None:
         rows = [observation("base", "p1", 42), observation("adapter", "p1", 42, valid=False)]
-        result = compare_matched_candidates(rows, baseline_candidate_id="base", adapted_candidate_id="adapter")
+        result = compare_matched_candidates(
+            rows,
+            plan=generation_plan(rows),
+            baseline_candidate_id="base",
+            adapted_candidate_id="adapter",
+        )
         self.assertEqual(result["validity"]["adapted_invalid_count"], 1)
         self.assertEqual(result["pairs"][0]["metrics"], {})
 
@@ -82,7 +127,36 @@ class MatchedComparisonTests(unittest.TestCase):
         duplicate["sample_id"] = "another-id"
         rows = [observation("base", "p1", 42), observation("adapter", "p1", 42), duplicate]
         with self.assertRaisesRegex(ValueError, "duplicate matched observation"):
-            compare_matched_candidates(rows, baseline_candidate_id="base", adapted_candidate_id="adapter")
+            compare_matched_candidates(
+                rows,
+                plan=generation_plan(rows),
+                baseline_candidate_id="base",
+                adapted_candidate_id="adapter",
+            )
+
+    def test_rejects_observations_not_bound_to_the_plan(self) -> None:
+        rows = [observation("base", "p1", 42), observation("adapter", "p1", 42)]
+        bound_plan = generation_plan(rows)
+        rows[1]["sample_id"] = "unplanned-sample"
+        with self.assertRaisesRegex(ValueError, "exactly cover the plan"):
+            compare_matched_candidates(
+                rows,
+                plan=bound_plan,
+                baseline_candidate_id="base",
+                adapted_candidate_id="adapter",
+            )
+
+    def test_rejects_plan_without_frozen_generation_requirements(self) -> None:
+        rows = [observation("base", "p1", 42), observation("adapter", "p1", 42)]
+        bound_plan = generation_plan(rows)
+        bound_plan["generation_requirements"]["frozen_generation_settings"] = False
+        with self.assertRaisesRegex(ValueError, "frozen settings"):
+            compare_matched_candidates(
+                rows,
+                plan=bound_plan,
+                baseline_candidate_id="base",
+                adapted_candidate_id="adapter",
+            )
 
 
 if __name__ == "__main__":

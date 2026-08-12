@@ -1,5 +1,6 @@
 {
   "scale": { "min": 1, "max": 5 },
+  "expected_rater_ids": ["rater-a", "rater-b"],
   "ratings": [
     { "rater_id": "rater-a", "blind_id": "sample-0001", "criterion": "speaker_identity", "score": 4 },
     { "rater_id": "rater-b", "blind_id": "sample-0001", "criterion": "speaker_identity", "score": 5 },

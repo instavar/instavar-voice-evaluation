@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from collections import defaultdict
 from statistics import mean, median
 from typing import Any
@@ -34,6 +37,83 @@ def _pair_key(row: dict[str, Any], index: int) -> tuple[str, int]:
     if not isinstance(seed, int) or isinstance(seed, bool) or seed < 0:
         raise ValueError(f"observation {index} seed must be a non-negative integer for matched comparison")
     return prompt_id.strip(), seed
+
+
+def _canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _validate_plan_binding(
+    plan: Any,
+    rows: list[dict[str, Any]],
+    candidate_ids: set[str],
+) -> dict[str, Any]:
+    if not isinstance(plan, dict) or plan.get("schema_version") != "1.0.0":
+        raise ValueError("generation plan must be a version 1.0.0 object")
+    plan_rows = plan.get("samples")
+    if not isinstance(plan_rows, list) or not plan_rows:
+        raise ValueError("generation plan must contain samples")
+    if plan.get("sample_count") is not None and plan.get("sample_count") != len(plan_rows):
+        raise ValueError("generation plan sample_count must equal the number of samples")
+    declared_candidates = plan.get("candidate_ids")
+    if (
+        not isinstance(declared_candidates, list)
+        or any(not isinstance(value, str) for value in declared_candidates)
+        or not candidate_ids <= set(declared_candidates)
+    ):
+        raise ValueError("generation plan candidate_ids must declare both requested candidates")
+    requirements = plan.get("generation_requirements")
+    if not isinstance(requirements, dict) or any(
+        requirements.get(key) is not True
+        for key in ("same_transcripts", "frozen_generation_settings", "record_failures_as_observations")
+    ):
+        raise ValueError(
+            "generation plan must require same transcripts, frozen settings, and failure observations"
+        )
+    expected: dict[str, dict[str, Any]] = {}
+    for index, row in enumerate(plan_rows):
+        if not isinstance(row, dict):
+            raise ValueError(f"generation-plan sample {index} must be an object")
+        if row.get("candidate_id") not in candidate_ids:
+            continue
+        sample_id = row.get("sample_id")
+        if not isinstance(sample_id, str) or not sample_id:
+            raise ValueError(f"generation-plan sample {index} must contain sample_id")
+        if sample_id in expected:
+            raise ValueError(f"duplicate generation-plan sample id: {sample_id}")
+        expected[sample_id] = row
+    if not expected:
+        raise ValueError("generation plan does not contain both requested candidates")
+
+    observed_ids = {str(row.get("sample_id", "")) for row in rows}
+    if observed_ids != set(expected):
+        missing = sorted(set(expected) - observed_ids)
+        unexpected = sorted(observed_ids - set(expected))
+        raise ValueError(
+            "matched comparison observations must exactly cover the plan; "
+            f"missing={missing}; unexpected={unexpected}"
+        )
+    for index, row in enumerate(rows):
+        sample_id = str(row.get("sample_id", ""))
+        planned = expected[sample_id]
+        for key in ("candidate_id", "prompt_id", "seed"):
+            if row.get(key) != planned.get(key):
+                raise ValueError(f"observation {index} {key} does not match generation plan for {sample_id}")
+        if str(row.get("requested_text", "")).strip() != str(planned.get("text", "")).strip():
+            raise ValueError(f"observation {index} requested_text does not match generation plan for {sample_id}")
+    prompt_pack = plan.get("prompt_pack")
+    if (
+        not isinstance(prompt_pack, dict)
+        or not isinstance(prompt_pack.get("sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", prompt_pack["sha256"])
+    ):
+        raise ValueError("generation plan must bind a prompt_pack sha256")
+    return {
+        "sha256": _canonical_sha256(plan),
+        "prompt_pack": prompt_pack,
+        "sample_count": len(expected),
+    }
 
 
 def _evidence_signature(row: dict[str, Any], kind: str, index: int) -> tuple[str, str] | None:
@@ -76,6 +156,7 @@ def _provenance(rows: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
 def compare_matched_candidates(
     rows: list[dict[str, Any]],
     *,
+    plan: dict[str, Any],
     baseline_candidate_id: str,
     adapted_candidate_id: str,
     seed: int = 20260812,
@@ -87,6 +168,11 @@ def compare_matched_candidates(
     selected = [row for row in rows if row.get("candidate_id") in {baseline_candidate_id, adapted_candidate_id}]
     if not selected:
         raise ValueError("no observations matched the requested candidates")
+    plan_binding = _validate_plan_binding(
+        plan,
+        selected,
+        {baseline_candidate_id, adapted_candidate_id},
+    )
 
     grouped: dict[str, dict[tuple[str, int], dict[str, Any]]] = {
         baseline_candidate_id: {},
@@ -194,6 +280,7 @@ def compare_matched_candidates(
         "adapted_candidate_id": adapted_candidate_id,
         "pairing_keys": ["prompt_id", "seed"],
         "pair_count": pair_count,
+        "generation_plan": plan_binding,
         "bootstrap_seed": seed,
         "validity": {
             "baseline_invalid_count": baseline_invalid,

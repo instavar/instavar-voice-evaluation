@@ -71,6 +71,47 @@ class MetricTests(unittest.TestCase):
         self.assertFalse(result["metric_provenance"]["asr"]["consistent"])
         self.assertEqual(len(result["metric_provenance"]["asr"]["extractors"]), 2)
 
+    def test_invalid_sample_cannot_improve_quality_aggregates(self) -> None:
+        rows = [
+            {
+                "sample_id": "valid",
+                "candidate_id": "adapter",
+                "prompt_id": "p1",
+                "requested_text": "hello world",
+                "hypothesis_text": "hello world",
+                "valid": True,
+                "reference_speaker_embedding": [1, 0],
+                "speaker_embedding": [1, 0],
+                "evidence": {
+                    "asr": {"extractor": "asr", "revision": "1"},
+                    "speaker_encoder": {"extractor": "speaker", "revision": "1"},
+                },
+            },
+            {
+                "sample_id": "invalid",
+                "candidate_id": "adapter",
+                "prompt_id": "p2",
+                "requested_text": "different words",
+                "hypothesis_text": "different words",
+                "valid": False,
+                "audio_duration_seconds": 0.04,
+                "reference_speaker_embedding": [1, 0],
+                "speaker_embedding": [1, 0],
+                "evidence": {
+                    "asr": {"extractor": "asr", "revision": "1"},
+                    "speaker_encoder": {"extractor": "speaker", "revision": "1"},
+                    "runtime": {"extractor": "runtime", "revision": "1"},
+                },
+            },
+        ]
+        result = score_objective_observations(rows)
+        candidate = result["candidates"][0]
+        self.assertEqual(candidate["asr_word_error_rate"]["count"], 1)
+        self.assertEqual(candidate["speaker_embedding_similarity"]["count"], 1)
+        invalid = next(sample for sample in result["samples"] if sample["sample_id"] == "invalid")
+        self.assertIn("asr_word_error_rate", invalid["excluded_quality_metrics"])
+        self.assertEqual(invalid["diagnostics"]["invalid_audio_duration_seconds"], 0.04)
+
 
 if __name__ == "__main__":
     unittest.main()

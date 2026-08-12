@@ -138,7 +138,8 @@ The review file contains no candidate identifiers or source filenames. With
 files. Preserve the reveal mapping separately and do not open it until all
 ratings are recorded. File staging does not strip embedded audio metadata, so
 inspect or normalize metadata separately if the source format can carry
-identity-bearing tags.
+identity-bearing tags. The builder rejects mixed audio extensions because a
+format difference can itself reveal which runtime produced a sample.
 
 After reviewers finish, aggregate criterion-level results with the matching review and reveal files:
 
@@ -148,7 +149,13 @@ instavar-voice-eval aggregate-listening listening-review.json reveal-mapping.jso
   --seed 20260812
 ```
 
-The output keeps every criterion separate, reports deterministic bootstrap intervals, and calculates interval Krippendorff alpha where multiple raters overlap. It fails on an incomplete rater by sample by criterion matrix by default. Use `--allow-incomplete` only when an explicitly incomplete coverage report is the intended artifact. Agreement measures rating consistency, not correctness or perceptual truth.
+The ratings document must declare `expected_rater_ids`, including invited
+reviewers who submitted nothing. The output keeps every criterion separate,
+reports deterministic bootstrap intervals, and calculates interval
+Krippendorff alpha where multiple raters overlap. It fails on an incomplete
+rater by sample by criterion matrix by default. Use `--allow-incomplete` only
+when an explicitly incomplete coverage report is the intended artifact.
+Agreement measures rating consistency, not correctness or perceptual truth.
 
 ## Score objective observations
 
@@ -174,18 +181,22 @@ as `prompt_id`:
 
 ```bash
 instavar-voice-eval compare-matched objective-observations.json \
+  --plan generation-plan.json \
   --baseline base-model \
   --adapted selected-adapter \
   --output matched-comparison.json \
   --seed 20260812
 ```
 
-The command fails if either candidate is missing a prompt and seed pair, if the
-requested transcripts differ, if a pair is duplicated, or if ASR, speaker, or
-runtime extractor provenance is mixed. Invalid generations remain in the
-validity delta. Metric deltas use exact pairs and keep directionality explicit,
-but the report sets `proves_adaptation_benefit` to false because objective
-proxies cannot decide perceptual improvement.
+The command binds every observation to the frozen generation plan and fails if
+either candidate is missing a planned sample, an unplanned sample is added, a
+prompt or seed differs, the requested transcripts differ, a pair is duplicated,
+or ASR, speaker, or runtime extractor provenance is mixed. Invalid generations
+remain in the validity delta but cannot improve WER, speaker similarity,
+audio-duration, or real-time-factor summaries. Metric deltas use exact pairs
+and keep directionality explicit, but the report sets
+`proves_adaptation_benefit` to false because objective proxies cannot decide
+perceptual improvement.
 
 ## Run the common lifecycle
 
