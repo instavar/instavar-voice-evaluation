@@ -18,6 +18,7 @@ from .speaker_references import (
 )
 
 TOKEN_RE = re.compile(r"[\w']+", re.UNICODE)
+PLAN_CATEGORY_STRATIFICATION_VERSION = "1.0.0"
 
 
 def _tokens(text: str) -> list[str]:
@@ -160,6 +161,7 @@ def _asr_reference_text_provenance(rows: list[dict[str, Any]], generation_plan: 
 def _plan_categories(rows: list[dict[str, Any]], generation_plan: Any | None) -> dict[str, Any]:
     if generation_plan is None:
         return {
+            "schema_version": PLAN_CATEGORY_STRATIFICATION_VERSION,
             "mode": "unavailable",
             "generation_plan_sha256": None,
             "planned_sample_count": None,
@@ -224,6 +226,7 @@ def _plan_categories(rows: list[dict[str, Any]], generation_plan: Any | None) ->
     categorized = len(rows) - uncategorized
     planned_uncategorized = len(raw_samples) - planned_categorized
     return {
+        "schema_version": PLAN_CATEGORY_STRATIFICATION_VERSION,
         "mode": "generation_plan" if uncategorized == 0 and planned_uncategorized == 0 else "partial_generation_plan",
         "generation_plan_sha256": canonical_sha256(generation_plan),
         "planned_sample_count": len(raw_samples),

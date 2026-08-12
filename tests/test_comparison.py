@@ -179,6 +179,7 @@ class MatchedComparisonTests(unittest.TestCase):
         self.assertEqual(reference_text["mode"], "generation_plan")
         self.assertTrue(reference_text["all_scored_references_plan_bound"])
         strata = result["plan_category_stratification"]
+        self.assertEqual(strata["schema_version"], "1.0.0")
         self.assertEqual(strata["mode"], "generation_plan")
         self.assertEqual(strata["categorized_pair_count"], 4)
         self.assertEqual(

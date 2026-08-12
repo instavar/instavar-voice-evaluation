@@ -9,7 +9,7 @@ from statistics import mean, median
 from typing import Any
 
 from .attempts import runtime_attempt_is_content_bound
-from .metrics import bootstrap_mean_interval, score_objective_observations
+from .metrics import PLAN_CATEGORY_STRATIFICATION_VERSION, bootstrap_mean_interval, score_objective_observations
 from .runtime_artifacts import exact_runtime_binding, verify_runtime_artifact_manifest
 from .speaker_reference_plans import (
     speaker_reference_assignment_sha256,
@@ -91,6 +91,7 @@ def _category_comparison(pair_rows: list[dict[str, Any]], *, seed: int) -> dict[
             uncategorized += 1
     if not grouped:
         return {
+            "schema_version": PLAN_CATEGORY_STRATIFICATION_VERSION,
             "mode": "unavailable",
             "categorized_pair_count": 0,
             "uncategorized_pair_count": len(pair_rows),
@@ -149,6 +150,7 @@ def _category_comparison(pair_rows: list[dict[str, Any]], *, seed: int) -> dict[
             }
         )
     return {
+        "schema_version": PLAN_CATEGORY_STRATIFICATION_VERSION,
         "mode": "generation_plan" if uncategorized == 0 else "partial_generation_plan",
         "categorized_pair_count": len(pair_rows) - uncategorized,
         "uncategorized_pair_count": uncategorized,

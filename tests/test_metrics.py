@@ -139,6 +139,7 @@ class MetricTests(unittest.TestCase):
         plan = {"schema_version": "1.0.0", "samples": plan_samples}
         result = score_objective_observations(rows, generation_plan=plan)
         strata = result["plan_category_stratification"]
+        self.assertEqual(strata["schema_version"], "1.0.0")
         self.assertEqual(strata["mode"], "generation_plan")
         self.assertEqual(strata["generation_plan_sha256"], canonical_sha256(plan))
         self.assertEqual(strata["categorized_sample_count"], 3)
