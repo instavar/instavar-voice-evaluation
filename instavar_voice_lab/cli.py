@@ -35,6 +35,7 @@ from .runtime_artifacts import (
     verify_runtime_artifact_manifest,
 )
 from .speaker_reference_plans import build_speaker_reference_assignment_plan
+from .speechbrain_ecapa import build_speechbrain_ecapa_results, speechbrain_ecapa_artifacts
 from .suite import build_generation_plan, check_suite_coverage, validate_prompt_pack
 
 
@@ -297,6 +298,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     speaker_reference_plan.add_argument("--output", type=Path, required=True)
 
+    speechbrain_results = commands.add_parser(
+        "build-speechbrain-ecapa-results",
+        help="run a pinned SpeechBrain ECAPA encoder and emit schema 1.4 speaker results",
+    )
+    speechbrain_results.add_argument("observations", type=Path)
+    speechbrain_results.add_argument("--audio-base-dir", type=Path, required=True)
+    speechbrain_results.add_argument("--model-dir", type=Path, required=True)
+    speechbrain_results.add_argument("--model-revision", required=True)
+    speechbrain_results.add_argument("--catalog-id", required=True)
+    speechbrain_results.add_argument(
+        "--speaker-reference",
+        action="append",
+        required=True,
+        help="REFERENCE_ID=AUDIO_PATH=TRANSCRIPT_PATH",
+    )
+    speechbrain_results.add_argument("--speaker-reference-plan", type=Path, required=True)
+    speechbrain_results.add_argument("--generation-plan", type=Path, required=True)
+    speechbrain_results.add_argument("--device", default="cpu")
+    speechbrain_results.add_argument(
+        "--trust-model-checkpoints",
+        action="store_true",
+        help="acknowledge that the local SpeechBrain checkpoint files come from a trusted source",
+    )
+    speechbrain_results.add_argument("--output", type=Path, required=True)
+
     apply_results = commands.add_parser(
         "apply-extractor-results",
         help="immutably augment observations with content-addressed extractor results",
@@ -309,6 +335,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="live ROLE=file|tree=PATH declaration; required for external extractors",
+    )
+    apply_results.add_argument(
+        "--speechbrain-ecapa-model-dir",
+        type=Path,
+        help="verify schema 1.4 results against this model tree and the bundled runner",
     )
     apply_results.add_argument(
         "--speaker-reference-plan",
@@ -326,7 +357,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--speaker-reference",
         action="append",
         default=[],
-        help="live REFERENCE_ID=AUDIO_PATH=TRANSCRIPT_PATH declaration for schema 1.2 speaker results",
+        help="live REFERENCE_ID=AUDIO_PATH=TRANSCRIPT_PATH declaration for multi-reference speaker results",
     )
     apply_results.add_argument("--output", type=Path, required=True)
 
@@ -693,9 +724,36 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         _write_json(args.output, result)
         return 0
+    if args.command == "build-speechbrain-ecapa-results":
+        try:
+            result = build_speechbrain_ecapa_results(
+                _read_json(args.observations),
+                audio_base_dir=args.audio_base_dir,
+                model_dir=args.model_dir,
+                model_revision=args.model_revision,
+                catalog_id=args.catalog_id,
+                speaker_references=_speaker_reference_declarations(args.speaker_reference),
+                speaker_reference_plan=_read_json(args.speaker_reference_plan),
+                generation_plan=_read_json(args.generation_plan),
+                device=args.device,
+                trusted_model_checkpoints=args.trust_model_checkpoints,
+            )
+        except (OSError, json.JSONDecodeError, RuntimeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0
     if args.command == "apply-extractor-results":
         try:
-            artifacts = _artifact_declarations(args.extractor_artifact) if args.extractor_artifact else None
+            if args.speechbrain_ecapa_model_dir and args.extractor_artifact:
+                raise ValueError("use either --speechbrain-ecapa-model-dir or --extractor-artifact, not both")
+            artifacts = (
+                speechbrain_ecapa_artifacts(args.speechbrain_ecapa_model_dir)
+                if args.speechbrain_ecapa_model_dir
+                else _artifact_declarations(args.extractor_artifact)
+                if args.extractor_artifact
+                else None
+            )
             result = apply_extractor_results(
                 _read_json(args.observations),
                 _read_json(args.results),

@@ -21,6 +21,7 @@ The shared layer provides:
 - content-addressed extractor implementation or model artifacts plus speaker-reference audio and transcript bindings;
 - deterministic multi-reference speaker scoring with per-sample reference-set binding;
 - frozen per-prompt and per-seed speaker-reference assignments bound to generation plans and reference catalogs;
+- an optional first-party SpeechBrain ECAPA execution path with CPU and CUDA routing, runtime provenance, and a content-addressed execution receipt;
 - content-addressed generation-attempt receipts for runtime timing, duration, and memory evidence;
 - exact-versus-derived cross-runtime artifact manifests with live content rechecks;
 - lifecycle-stage and matched-comparison declarations for every supported adaptation path;
@@ -291,7 +292,7 @@ unversioned rows so historical evidence can be inspected, and reports how many
 rows were versioned rather than silently treating them as current-contract
 evidence.
 
-The core package does not bundle a preferred ASR model or speaker encoder. Instead, each sample records the extractor name and revision that produced its transcript, speaker embedding, runtime, and memory observations. Score those versioned observations with:
+The core package does not bundle model weights or require a particular ASR model. It accepts external speaker encoders and also provides an optional first-party execution path for the pinned SpeechBrain ECAPA architecture. Each sample records the extractor name and revision that produced its transcript, speaker embedding, runtime, and memory observations. Score those versioned observations with:
 
 ```bash
 instavar-voice-eval score-objective examples/objective-observations.json \
@@ -513,6 +514,66 @@ that a speaker encoder honestly derived its embeddings from the declared audio
 and model bytes, that the chosen strata are representative, or that the metric
 tracks human perception.
 
+### Execute the optional SpeechBrain ECAPA path
+
+Schema 1.4 removes the manual vector-assembly step for one well-defined learned
+speaker metric. Install compatible SpeechBrain, Torch, and Torchaudio packages
+in an isolated environment. Supply a local, immutable model tree with regular
+files. Hugging Face snapshots normally contain symlinks, so make a dereferenced
+copy before fingerprinting it:
+
+```bash
+cp -RL /cache/models--speechbrain--spkrec-ecapa-voxceleb/snapshots/$MODEL_REVISION \
+  evaluation/ecapa-model
+
+instavar-voice-eval build-speechbrain-ecapa-results \
+  generation-observations.json \
+  --audio-base-dir evaluation \
+  --model-dir evaluation/ecapa-model \
+  --model-revision "$MODEL_REVISION" \
+  --catalog-id target-voice-1 \
+  --speaker-reference phone=references/phone.wav=references/phone.txt \
+  --speaker-reference studio=references/studio.wav=references/studio.txt \
+  --speaker-reference-plan speaker-reference-assignment-plan.json \
+  --generation-plan generation-plan.json \
+  --device cpu \
+  --trust-model-checkpoints \
+  --output speaker-results-v1.4.json
+
+instavar-voice-eval apply-extractor-results \
+  generation-observations.json \
+  speaker-results-v1.4.json \
+  --audio-base-dir evaluation \
+  --speechbrain-ecapa-model-dir evaluation/ecapa-model \
+  --speaker-reference phone=references/phone.wav=references/phone.txt \
+  --speaker-reference studio=references/studio.wav=references/studio.txt \
+  --speaker-reference-plan speaker-reference-assignment-plan.json \
+  --generation-plan generation-plan.json \
+  --output observations-with-executed-speaker-metrics.json
+```
+
+Use `--device cuda` or an indexed device such as `--device cuda:1` when the
+installed Torch build and host support CUDA. The runner loads the exact model
+tree, overrides SpeechBrain's checkpoint prefix to that local tree to prevent a
+hidden Hub fetch, encodes every frozen reference and candidate audio file,
+records Python and package versions, preserves per-sample backend failures, and rechecks the
+model, runner, reference catalog, and candidate audio after execution. The
+consumer verifies the entire result document against
+`execution_receipt_sha256` and rechecks the same live artifacts.
+
+SpeechBrain and older Torch combinations can deserialize checkpoint pickle
+data. The command therefore refuses to load a model until
+`--trust-model-checkpoints` explicitly acknowledges that the checkpoint files
+came from a trusted source. Content hashes identify bytes but do not make
+untrusted checkpoint bytes safe.
+
+This path materially reduces accidental and manual provenance gaps, but its
+receipt is unsigned and produced on the same host. It cannot defeat a malicious
+host, prove that a dependency behaved honestly, establish metric validity for a
+new accent or recording channel, or replace blind human evaluation. A
+same-speaker score from two excerpts of one recording validates plumbing only.
+Evaluate synthesized held-out passages before drawing model-quality conclusions.
+
 ## Compare a matched baseline and adapted candidate
 
 Generate the base model and adapted artifact from the same prompt pack and
@@ -629,4 +690,4 @@ trains, synthesizes correct speech, or sounds good.
 python3 -m unittest discover -s tests -v
 ```
 
-These tests validate contract behavior, deterministic artifact generation, proxy calculations, listening aggregation, and a complete lightweight lifecycle. They do not run heavyweight model training, real ASR, real speaker encoders, or human listening.
+These tests validate contract behavior, deterministic artifact generation, proxy calculations, listening aggregation, the SpeechBrain runner through a dependency-free test double, and a complete lightweight lifecycle. They do not run heavyweight model training, real ASR, real speaker encoders, or human listening. Release evidence should record a separate real-model smoke test on the intended host and dependency set.

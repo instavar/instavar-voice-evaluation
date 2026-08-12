@@ -5,7 +5,7 @@
   "type": "object",
   "required": ["schema_version", "source_observations_sha256", "extractor", "results"],
   "properties": {
-    "schema_version": { "enum": ["1.1.0", "1.2.0", "1.3.0"] },
+    "schema_version": { "enum": ["1.1.0", "1.2.0", "1.3.0", "1.4.0"] },
     "source_observations_sha256": { "$ref": "#/$defs/sha256" },
     "extractor": {
       "type": "object",
@@ -58,6 +58,29 @@
     },
     "reference_aggregation": { "const": "mean_cosine_similarity_v1" },
     "reference_assignment_plan_sha256": { "$ref": "#/$defs/sha256" },
+    "execution": {
+      "type": "object",
+      "required": ["backend", "device", "trusted_model_checkpoints", "python_version", "platform", "package_versions"],
+      "properties": {
+        "backend": { "const": "instavar_voice_lab.speechbrain_ecapa_v1" },
+        "device": { "type": "string", "pattern": "^(cpu|cuda(:[0-9]+)?)$" },
+        "trusted_model_checkpoints": { "const": true },
+        "python_version": { "type": "string", "minLength": 1 },
+        "platform": { "type": "string", "minLength": 1 },
+        "package_versions": {
+          "type": "object",
+          "required": ["speechbrain", "torch", "torchaudio"],
+          "properties": {
+            "speechbrain": { "type": "string", "minLength": 1 },
+            "torch": { "type": "string", "minLength": 1 },
+            "torchaudio": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "execution_receipt_sha256": { "$ref": "#/$defs/sha256" },
     "results": {
       "type": "array",
       "items": {
@@ -111,7 +134,7 @@
         "required": ["extractor"]
       },
       "then": {
-        "if": { "properties": { "schema_version": { "enum": ["1.2.0", "1.3.0"] } } },
+        "if": { "properties": { "schema_version": { "enum": ["1.2.0", "1.3.0", "1.4.0"] } } },
         "then": {
           "required": ["reference_catalog", "reference_aggregation"],
           "not": { "required": ["reference"] }
@@ -140,7 +163,7 @@
     {
       "if": {
         "properties": {
-          "schema_version": { "enum": ["1.2.0", "1.3.0"] },
+          "schema_version": { "enum": ["1.2.0", "1.3.0", "1.4.0"] },
           "extractor": {
             "properties": { "kind": { "const": "speaker_encoder" } },
             "required": ["kind"]
@@ -166,7 +189,7 @@
     {
       "if": {
         "properties": {
-          "schema_version": { "const": "1.3.0" },
+          "schema_version": { "enum": ["1.3.0", "1.4.0"] },
           "extractor": {
             "properties": { "kind": { "const": "speaker_encoder" } },
             "required": ["kind"]
@@ -176,6 +199,29 @@
       },
       "then": { "required": ["reference_assignment_plan_sha256"] },
       "else": { "not": { "required": ["reference_assignment_plan_sha256"] } }
+    },
+    {
+      "if": {
+        "properties": { "schema_version": { "const": "1.4.0" } },
+        "required": ["schema_version"]
+      },
+      "then": {
+        "required": ["execution", "execution_receipt_sha256"],
+        "properties": {
+          "extractor": {
+            "properties": { "kind": { "const": "speaker_encoder" } },
+            "required": ["kind"]
+          }
+        }
+      },
+      "else": {
+        "not": {
+          "anyOf": [
+            { "required": ["execution"] },
+            { "required": ["execution_receipt_sha256"] }
+          ]
+        }
+      }
     }
   ],
   "additionalProperties": false,

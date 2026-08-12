@@ -29,10 +29,12 @@ MUTABLE_REVISIONS = {"latest", "main", "master", "head", "unknown", "unversioned
 EXTRACTION_SCHEMA_VERSION = "1.1.0"
 MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION = "1.2.0"
 PLANNED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION = "1.3.0"
+EXECUTED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION = "1.4.0"
 EXTRACTION_SCHEMA_VERSIONS = {
     EXTRACTION_SCHEMA_VERSION,
     MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
     PLANNED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
+    EXECUTED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
 }
 EXTRACTOR_FIELDS = {
     "asr": {"hypothesis_text"},
@@ -371,6 +373,8 @@ def apply_extractor_results(
     revision = extractor.get("revision")
     if kind not in EXTRACTOR_FIELDS:
         raise ValueError("unsupported extractor kind")
+    if extraction_version == EXECUTED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION and kind != "speaker_encoder":
+        raise ValueError("schema 1.4 extractor results are reserved for executed speaker-encoder evidence")
     if not isinstance(name, str) or not name.strip():
         raise ValueError("extractor name must be non-empty")
     revision = _immutable_revision(revision)
@@ -428,11 +432,14 @@ def apply_extractor_results(
                 raise ValueError("speaker reference catalog does not match the live audio and transcripts")
             if extraction.get("reference_aggregation") != REFERENCE_AGGREGATION:
                 raise ValueError(f"reference_aggregation must equal {REFERENCE_AGGREGATION}")
-            if extraction_version == PLANNED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION:
+            if extraction_version in {
+                PLANNED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
+                EXECUTED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
+            }:
                 if speaker_reference_plan is None:
-                    raise ValueError("schema 1.3 speaker results require a live speaker reference assignment plan")
+                    raise ValueError("planned speaker results require a live speaker reference assignment plan")
                 if generation_plan is None:
-                    raise ValueError("schema 1.3 speaker results require the live generation plan")
+                    raise ValueError("planned speaker results require the live generation plan")
                 reference_assignment_plan = validate_speaker_reference_assignment_plan(
                     speaker_reference_plan,
                     generation_plan=generation_plan,
@@ -472,8 +479,16 @@ def apply_extractor_results(
         expected_document_fields.add("reference")
     elif kind == "speaker_encoder":
         expected_document_fields.update({"reference_catalog", "reference_aggregation"})
-        if extraction_version == PLANNED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION:
+        if extraction_version in {
+            PLANNED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
+            EXECUTED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
+        }:
             expected_document_fields.add("reference_assignment_plan_sha256")
+        if extraction_version == EXECUTED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION:
+            from .speechbrain_ecapa import validate_execution_receipt
+
+            expected_document_fields.update({"execution", "execution_receipt_sha256"})
+            validate_execution_receipt(extraction)
     if set(extraction) != expected_document_fields:
         raise ValueError(f"extractor result document must contain exactly {sorted(expected_document_fields)}")
 
@@ -514,6 +529,7 @@ def apply_extractor_results(
         if kind == "speaker_encoder" and extraction_version in {
             MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
             PLANNED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
+            EXECUTED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
         }:
             expected_result_fields.add("reference_ids")
             raw_reference_ids = result.get("reference_ids")
@@ -572,6 +588,13 @@ def apply_extractor_results(
             "extractor_artifact_set_sha256": expected_extractor["artifact_set_sha256"],
             "input_audio_sha256": live_sha,
         }
+        if extraction_version == EXECUTED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION:
+            provenance.update(
+                {
+                    "extractor_execution": extraction["execution"],
+                    "extractor_execution_receipt_sha256": extraction["execution_receipt_sha256"],
+                }
+            )
         if reference is not None:
             provenance.update(
                 {
