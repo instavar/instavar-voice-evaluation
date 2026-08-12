@@ -110,6 +110,7 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
     per_candidate: dict[str, dict[str, Any]] = {}
     per_sample: list[dict[str, Any]] = []
     evidence_signatures: dict[str, set[tuple[str, str]]] = {}
+    evidence_content_binding: dict[str, dict[str, int]] = {}
 
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
@@ -171,6 +172,21 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
             evidence_signatures.setdefault(kind, set()).add(
                 (record["extractor"].strip(), record["revision"].strip())
             )
+            binding = evidence_content_binding.setdefault(kind, {"bound": 0, "unbound": 0})
+            input_audio_sha = record.get("input_audio_sha256")
+            if input_audio_sha is None:
+                binding["unbound"] += 1
+            else:
+                audio_sha = row.get("audio_sha256")
+                if (
+                    not isinstance(input_audio_sha, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", input_audio_sha)
+                    or input_audio_sha != audio_sha
+                ):
+                    raise ValueError(
+                        f"observation {index} evidence.{kind}.input_audio_sha256 must match audio_sha256"
+                    )
+                binding["bound"] += 1
         if row["valid"]:
             candidate["valid"] += 1
 
@@ -350,6 +366,9 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
                     {"extractor": extractor, "revision": revision}
                     for extractor, revision in sorted(signatures)
                 ],
+                "content_bound_count": evidence_content_binding[kind]["bound"],
+                "unbound_count": evidence_content_binding[kind]["unbound"],
+                "all_content_bound": evidence_content_binding[kind]["unbound"] == 0,
             }
             for kind, signatures in sorted(evidence_signatures.items())
         },

@@ -159,6 +159,30 @@ class MatchedComparisonTests(unittest.TestCase):
         )
         self.assertFalse(result["generation_plan"]["required_metric_coverage_enforced"])
 
+    def test_plan_required_external_metrics_must_bind_to_audio_hash(self) -> None:
+        rows = [observation("base", "p1", 42), observation("adapter", "p1", 42)]
+        bound_plan = generation_plan(rows)
+        bound_plan["schema_version"] = "1.1.0"
+        bound_plan["required_objective_metrics"] = ["asr_word_error_rate"]
+        with self.assertRaisesRegex(ValueError, "must bind required metrics to audio_sha256"):
+            compare_matched_candidates(
+                rows,
+                plan=bound_plan,
+                baseline_candidate_id="base",
+                adapted_candidate_id="adapter",
+            )
+
+        for row in rows:
+            row["audio_sha256"] = "a" * 64
+            row["evidence"]["asr"]["input_audio_sha256"] = "a" * 64
+        result = compare_matched_candidates(
+            rows,
+            plan=bound_plan,
+            baseline_candidate_id="base",
+            adapted_candidate_id="adapter",
+        )
+        self.assertEqual(result["status"], "passed")
+
     def test_preserves_invalid_pair_in_validity_delta(self) -> None:
         rows = [observation("base", "p1", 42), observation("adapter", "p1", 42, valid=False)]
         result = compare_matched_candidates(

@@ -59,6 +59,7 @@ class MetricTests(unittest.TestCase):
         self.assertEqual(candidate["sample_rate_hz"]["mean"], 24000)
         self.assertEqual(candidate["silence_fraction"]["mean"], 0.1)
         self.assertEqual(candidate["clipping_fraction"]["mean"], 0.0)
+        self.assertFalse(result["metric_provenance"]["asr"]["all_content_bound"])
         self.assertNotIn("composite_score", result)
         self.assertFalse(result["proves_perceptual_quality"])
 
@@ -145,6 +146,29 @@ class MetricTests(unittest.TestCase):
             "evidence": {"audio_probe": {"extractor": "probe", "revision": "1"}},
         }
         with self.assertRaisesRegex(ValueError, "sample_rate_hz must be a positive integer"):
+            score_objective_observations([row])
+
+    def test_reports_and_validates_content_bound_metric_evidence(self) -> None:
+        row = {
+            "sample_id": "sample-1",
+            "candidate_id": "adapter",
+            "prompt_id": "p1",
+            "requested_text": "hello",
+            "hypothesis_text": "hello",
+            "valid": True,
+            "audio_sha256": "a" * 64,
+            "evidence": {
+                "asr": {
+                    "extractor": "asr",
+                    "revision": "1",
+                    "input_audio_sha256": "a" * 64,
+                }
+            },
+        }
+        result = score_objective_observations([row])
+        self.assertTrue(result["metric_provenance"]["asr"]["all_content_bound"])
+        row["evidence"]["asr"]["input_audio_sha256"] = "b" * 64
+        with self.assertRaisesRegex(ValueError, "must match audio_sha256"):
             score_objective_observations([row])
 
 

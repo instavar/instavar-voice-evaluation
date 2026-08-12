@@ -47,6 +47,13 @@ REQUIRED_METRIC_OUTPUTS = {
     "real_time_factor": "real_time_factor",
     "peak_memory_bytes": "peak_memory_bytes",
 }
+CONTENT_BOUND_EVIDENCE = {
+    "asr_word_error_rate": "asr",
+    "speaker_embedding_similarity": "speaker_encoder",
+    "sample_rate_hz": "audio_probe",
+    "silence_fraction": "audio_probe",
+    "clipping_fraction": "audio_probe",
+}
 
 
 def _pair_key(row: dict[str, Any], index: int) -> tuple[str, int]:
@@ -185,6 +192,30 @@ def _provenance(rows: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
     }
 
 
+def _validate_content_bound_required_metrics(
+    row: dict[str, Any],
+    required_metrics: list[str],
+    index: int,
+) -> None:
+    required_kinds = {
+        kind
+        for metric in required_metrics
+        if (kind := CONTENT_BOUND_EVIDENCE.get(metric)) is not None
+    }
+    if not required_kinds:
+        return
+    audio_sha = row.get("audio_sha256")
+    if not isinstance(audio_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", audio_sha):
+        raise ValueError(f"observation {index} must bind required metrics to audio_sha256")
+    evidence = row.get("evidence")
+    for kind in sorted(required_kinds):
+        record = evidence.get(kind) if isinstance(evidence, dict) else None
+        if not isinstance(record, dict) or record.get("input_audio_sha256") != audio_sha:
+            raise ValueError(
+                f"observation {index} evidence.{kind}.input_audio_sha256 must match audio_sha256"
+            )
+
+
 def compare_matched_candidates(
     rows: list[dict[str, Any]],
     *,
@@ -231,7 +262,7 @@ def compare_matched_candidates(
     if not baseline_keys:
         raise ValueError("matched comparison requires at least one prompt and seed pair")
 
-    for key in sorted(baseline_keys):
+    for pair_index, key in enumerate(sorted(baseline_keys)):
         baseline_text = str(grouped[baseline_candidate_id][key].get("requested_text", "")).strip()
         adapted_text = str(grouped[adapted_candidate_id][key].get("requested_text", "")).strip()
         if not baseline_text or baseline_text != adapted_text:
@@ -268,6 +299,16 @@ def compare_matched_candidates(
                     f"prompt={key[0]}; seed={key[1]}; missing baseline={missing_required_baseline}; "
                     f"missing adapted={missing_required_adapted}"
                 )
+            _validate_content_bound_required_metrics(
+                baseline_row,
+                plan_binding["required_objective_metrics"],
+                pair_index * 2,
+            )
+            _validate_content_bound_required_metrics(
+                adapted_row,
+                plan_binding["required_objective_metrics"],
+                pair_index * 2 + 1,
+            )
         if baseline_valid and adapted_valid and set(baseline_metrics) != set(adapted_metrics):
             missing_adapted = sorted(set(baseline_metrics) - set(adapted_metrics))
             missing_baseline = sorted(set(adapted_metrics) - set(baseline_metrics))
@@ -350,7 +391,8 @@ def compare_matched_candidates(
         "evidence_boundary": (
             "A passed matched comparison proves exact prompt and seed pairing, plan-required and symmetric metric "
             "availability for valid pairs, and consistent extractor provenance. "
-            "Objective deltas remain proxies and do not establish speaker identity, accent fidelity, cadence, naturalness, or preference."
+            "Objective deltas remain proxies and do not establish speaker identity, accent fidelity, cadence, "
+            "naturalness, or preference."
         ),
     }
 

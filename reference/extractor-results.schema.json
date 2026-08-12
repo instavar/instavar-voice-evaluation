@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/instavar/instavar-voice-evaluation/main/reference/extractor-results.schema.json",
+  "title": "Instavar Voice content-addressed extractor results",
+  "type": "object",
+  "required": ["schema_version", "source_observations_sha256", "extractor", "results"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "source_observations_sha256": { "$ref": "#/$defs/sha256" },
+    "extractor": {
+      "type": "object",
+      "required": ["kind", "name", "revision"],
+      "properties": {
+        "kind": { "enum": ["asr", "speaker_encoder", "audio_probe"] },
+        "name": { "type": "string", "minLength": 1 },
+        "revision": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["sample_id", "audio_sha256", "status"],
+        "properties": {
+          "sample_id": { "$ref": "#/$defs/identifier" },
+          "audio_sha256": { "$ref": "#/$defs/sha256" },
+          "status": { "enum": ["complete", "failed"] },
+          "values": { "type": "object" },
+          "error_type": { "type": "string", "minLength": 1 },
+          "error": { "type": "string", "minLength": 1 }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "status": { "const": "complete" } } },
+            "then": { "required": ["values"] }
+          },
+          {
+            "if": { "properties": { "status": { "const": "failed" } } },
+            "then": { "required": ["error_type", "error"] }
+          }
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

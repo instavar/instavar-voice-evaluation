@@ -304,8 +304,46 @@ These are objective proxies. They do not establish accent fidelity, cadence,
 naturalness, or listening fatigue.
 
 The scorer also reports every extractor and revision observed for ASR, speaker
-encoding, and runtime probes. Mixed provenance remains visible in an ordinary
-score report and is rejected by the matched-comparison command.
+encoding, and runtime probes. It counts content-bound and unbound evidence for
+each extractor kind. Mixed provenance remains visible in an ordinary score
+report and is rejected by the matched-comparison command.
+
+## Bind extractor results to generated audio
+
+Do not add ASR, speaker, or audio-probe values directly to generation rows.
+Produce a content-addressed extractor result document, then apply it without
+rewriting the producer fields. The built-in PCM WAV probe provides the first
+complete path:
+
+```bash
+instavar-voice-eval build-audio-probe-results generation-observations.json \
+  --audio-base-dir evaluation \
+  --extractor-revision "$EVALUATOR_REVISION" \
+  --output audio-probe-results.json
+
+instavar-voice-eval apply-extractor-results \
+  generation-observations.json \
+  audio-probe-results.json \
+  --audio-base-dir evaluation \
+  --output observations-with-audio-probes.json
+```
+
+The result document binds the complete source observation array and every
+result to SHA-256. Application rehashes each live WAV, rejects missing,
+unexpected, duplicate, stale, symlinked, empty, or overwriting results, and adds
+`input_audio_sha256` to extractor provenance. A failed extraction stays on its
+sample as explicit `extractor_failures` evidence rather than disappearing from
+coverage. The same version 1.0 result contract supports `asr` and
+`speaker_encoder` patches from external tools. Those tools can obtain the exact
+source binding with:
+
+```bash
+instavar-voice-eval fingerprint-observations generation-observations.json
+```
+
+This protects source-to-metric identity on the observed host. It does not prove
+that an extractor is scientifically valid, robust to accent variation, or free
+from hostile-host tampering.
 
 ## Compare a matched baseline and adapted candidate
 
