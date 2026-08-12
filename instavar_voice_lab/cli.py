@@ -15,6 +15,7 @@ from .lifecycle import (
     validate_backend_registry,
     validate_backend_spec,
 )
+from .lineage import build_dataset_lineage, validate_dataset_lineage, verify_dataset_lineage
 from .listening import aggregate_listening_results, build_blind_pack, stage_blind_audio
 from .metrics import score_objective_observations
 from .suite import build_generation_plan, check_suite_coverage, validate_prompt_pack
@@ -28,6 +29,19 @@ def _read_json(path: Path):
 def _write_json(path: Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _artifact_declarations(values: list[str]) -> dict[str, tuple[Path, str]]:
+    declarations: dict[str, tuple[Path, str]] = {}
+    for value in values:
+        parts = value.split("=", 2)
+        if len(parts) != 3 or not all(parts):
+            raise ValueError(f"invalid artifact declaration: {value}")
+        role, kind, raw_path = parts
+        if role in declarations:
+            raise ValueError(f"duplicate artifact role: {role}")
+        declarations[role] = (Path(raw_path), kind)
+    return declarations
 
 
 def _validate(kind: str, path: Path) -> int:
@@ -53,7 +67,9 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("kind", choices=sorted(VALIDATORS))
     validate.add_argument("path", type=Path)
 
-    repository = commands.add_parser("validate-repository", help="validate instavar-voice-capabilities.json in a repository")
+    repository = commands.add_parser(
+        "validate-repository", help="validate instavar-voice-capabilities.json in a repository"
+    )
     repository.add_argument("root", type=Path)
 
     audit = commands.add_parser("audit-corpus", help="audit train, validation, and test JSONL manifests")
@@ -68,6 +84,27 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--group-field", default="")
     audit.add_argument("--output", type=Path)
 
+    build_lineage = commands.add_parser(
+        "build-dataset-lineage",
+        help="fingerprint raw and prepared dataset artifacts into a lineage receipt",
+    )
+    build_lineage.add_argument("--lineage-id", required=True)
+    build_lineage.add_argument("--producer-repository", required=True)
+    build_lineage.add_argument("--producer-revision", required=True)
+    build_lineage.add_argument("--input", action="append", required=True, help="ROLE=file|tree=PATH")
+    build_lineage.add_argument("--output-artifact", action="append", required=True, help="ROLE=file|tree=PATH")
+    build_lineage.add_argument("--receipt", type=Path, required=True)
+
+    verify_lineage = commands.add_parser(
+        "verify-dataset-lineage",
+        help="verify a dataset lineage receipt against current artifacts",
+    )
+    verify_lineage.add_argument("receipt", type=Path)
+    verify_lineage.add_argument("--producer-revision", required=True)
+    verify_lineage.add_argument("--input", action="append", required=True, help="ROLE=file|tree=PATH")
+    verify_lineage.add_argument("--output-artifact", action="append", required=True, help="ROLE=file|tree=PATH")
+    verify_lineage.add_argument("--report", type=Path)
+
     probe = commands.add_parser("probe-audio", help="record deterministic diagnostics for a PCM WAV file")
     probe.add_argument("wav", type=Path)
     probe.add_argument("--output", type=Path)
@@ -81,7 +118,9 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--output", type=Path)
 
     blind = commands.add_parser("build-listening-pack", help="create blind review and reveal mapping documents")
-    blind.add_argument("samples", type=Path, help="JSON array of sample_id, candidate_id, prompt_id, and audio_path rows")
+    blind.add_argument(
+        "samples", type=Path, help="JSON array of sample_id, candidate_id, prompt_id, and audio_path rows"
+    )
     blind.add_argument("--criteria", type=Path, required=True, help="JSON array of criterion names")
     blind.add_argument("--review-output", type=Path, required=True)
     blind.add_argument("--reveal-output", type=Path, required=True)
@@ -197,6 +236,40 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(json.dumps(result, indent=2, sort_keys=True))
         return 0 if result["status"] == "passed" else 1
+    if args.command == "build-dataset-lineage":
+        try:
+            result = build_dataset_lineage(
+                lineage_id=args.lineage_id,
+                producer_repository=args.producer_repository,
+                producer_revision=args.producer_revision,
+                inputs=_artifact_declarations(args.input),
+                outputs=_artifact_declarations(args.output_artifact),
+            )
+        except (OSError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.receipt, result)
+        return 0
+    if args.command == "verify-dataset-lineage":
+        try:
+            document = _read_json(args.receipt)
+            contract_errors = validate_dataset_lineage(document)
+            if contract_errors:
+                raise ValueError("invalid dataset lineage: " + "; ".join(contract_errors))
+            result = verify_dataset_lineage(
+                document,
+                producer_revision=args.producer_revision,
+                inputs=_artifact_declarations(args.input),
+                outputs=_artifact_declarations(args.output_artifact),
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        if args.report:
+            _write_json(args.report, result)
+        else:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
     if args.command == "probe-audio":
         try:
             result = probe_wav(args.wav)

@@ -119,6 +119,31 @@ instavar-voice-eval audit-corpus \
 
 The audit hashes each manifest and fails if a recording group crosses splits. It checks that referenced audio files exist, but it does not decode every audio format or prove that the transcript matches the recording.
 
+Bind audited raw splits to model-ready artifacts with a content-addressed lineage receipt:
+
+```bash
+instavar-voice-eval build-dataset-lineage \
+  --lineage-id female01-audio8-v1 \
+  --producer-repository instavar/audio8-tts-lora-finetuning \
+  --producer-revision "$COMPANION_REVISION" \
+  --input raw_train=file=/data/raw-train.jsonl \
+  --input raw_validation=file=/data/raw-validation.jsonl \
+  --input raw_test=file=/data/raw-test.jsonl \
+  --output-artifact prepared_train=file=/data/train.prepared.jsonl \
+  --output-artifact prepared_validation=file=/data/validation.prepared.jsonl \
+  --receipt dataset-lineage.json
+
+instavar-voice-eval verify-dataset-lineage dataset-lineage.json \
+  --producer-revision "$COMPANION_REVISION" \
+  --input raw_train=file=/data/raw-train.jsonl \
+  --input raw_validation=file=/data/raw-validation.jsonl \
+  --input raw_test=file=/data/raw-test.jsonl \
+  --output-artifact prepared_train=file=/data/train.prepared.jsonl \
+  --output-artifact prepared_validation=file=/data/validation.prepared.jsonl
+```
+
+The receipt detects substitution and mutation of declared inputs and outputs. It does not prove that the preparation algorithm was semantically correct, so preparation code review and model-specific validation remain separate gates.
+
 ## Build a blind listening pack
 
 Prepare a JSON array containing `sample_id`, `candidate_id`, `prompt_id`, and `audio_path`, plus a JSON array of criterion names. Then run:
