@@ -1,0 +1,64 @@
+{
+  "schema_version": "1.0.0",
+  "routes": [
+    {
+      "criterion": "speaker_identity",
+      "selector": "all_samples"
+    },
+    {
+      "criterion": "singapore_english_accent_fidelity",
+      "selector": "categories",
+      "categories": [
+        "neutral_singapore_english",
+        "natural_local_context",
+        "pronunciation"
+      ]
+    },
+    {
+      "criterion": "lexical_pronunciation",
+      "selector": "categories_or_lexical_anchors",
+      "categories": [
+        "pronunciation"
+      ]
+    },
+    {
+      "criterion": "cadence_variation",
+      "selector": "categories",
+      "categories": [
+        "long_form_cadence",
+        "long_form_structure"
+      ]
+    },
+    {
+      "criterion": "long_form_monotony",
+      "selector": "categories",
+      "categories": [
+        "long_form_cadence",
+        "long_form_structure"
+      ]
+    },
+    {
+      "criterion": "naturalness",
+      "selector": "all_samples"
+    },
+    {
+      "criterion": "emotion_and_instruction_obedience",
+      "selector": "categories",
+      "categories": [
+        "emotion_control"
+      ]
+    },
+    {
+      "criterion": "artifact_severity",
+      "selector": "all_samples"
+    },
+    {
+      "criterion": "listening_fatigue",
+      "selector": "categories",
+      "categories": [
+        "long_form_cadence",
+        "long_form_structure"
+      ]
+    }
+  ]
+}

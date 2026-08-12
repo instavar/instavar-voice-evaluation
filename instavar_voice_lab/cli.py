@@ -27,7 +27,12 @@ from .lifecycle import (
     validate_backend_spec,
 )
 from .lineage import build_dataset_lineage, validate_dataset_lineage, verify_dataset_lineage
-from .listening import aggregate_listening_results, build_blind_pack, stage_blind_audio
+from .listening import (
+    aggregate_listening_results,
+    build_blind_pack,
+    build_listening_assignment_plan,
+    stage_blind_audio,
+)
 from .metrics import score_objective_observations
 from .observations import validate_objective_observations
 from .runtime_artifacts import (
@@ -186,7 +191,9 @@ def build_parser() -> argparse.ArgumentParser:
     blind.add_argument(
         "samples", type=Path, help="JSON array of sample_id, candidate_id, prompt_id, and audio_path rows"
     )
-    blind.add_argument("--criteria", type=Path, required=True, help="JSON array of criterion names")
+    blind.add_argument("--criteria", type=Path, help="JSON array of criterion names for legacy all-sample routing")
+    blind.add_argument("--assignment-plan", type=Path, help="preregistered plan-bound listening assignments")
+    blind.add_argument("--generation-plan", type=Path, help="generation plan bound by --assignment-plan")
     blind.add_argument("--review-output", type=Path, required=True)
     blind.add_argument("--reveal-output", type=Path, required=True)
     blind.add_argument("--seed", type=int, required=True)
@@ -196,6 +203,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="copy audio to identity-neutral blind_audio paths under this directory",
     )
     blind.add_argument("--stage-manifest", type=Path)
+
+    listening_assignments = commands.add_parser(
+        "build-listening-assignment-plan",
+        help="preregister criterion-specific review assignments from a generation plan",
+    )
+    listening_assignments.add_argument("generation_plan", type=Path)
+    listening_assignments.add_argument("--routing", type=Path, required=True)
+    listening_assignments.add_argument("--output", type=Path, required=True)
 
     objective = commands.add_parser(
         "score-objective",
@@ -604,7 +619,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "build-listening-pack":
         try:
             samples = _read_json(args.samples)
-            criteria = _read_json(args.criteria)
+            if bool(args.criteria) == bool(args.assignment_plan):
+                raise ValueError("provide exactly one of --criteria or --assignment-plan")
+            if args.assignment_plan and not args.generation_plan:
+                raise ValueError("--generation-plan is required with --assignment-plan")
+            if args.generation_plan and not args.assignment_plan:
+                raise ValueError("--generation-plan is only valid with --assignment-plan")
+            criteria = _read_json(args.criteria) if args.criteria else None
+            assignment_plan = _read_json(args.assignment_plan) if args.assignment_plan else None
+            generation_plan = _read_json(args.generation_plan) if args.generation_plan else None
             if not isinstance(samples, list):
                 raise ValueError("samples must be a JSON array")
             normalized_samples = []
@@ -617,7 +640,13 @@ def main(argv: list[str] | None = None) -> int:
                 if not audio_path.is_absolute():
                     normalized["audio_path"] = str((args.samples.parent / audio_path).resolve())
                 normalized_samples.append(normalized)
-            review, reveal = build_blind_pack(normalized_samples, criteria, seed=args.seed)
+            review, reveal = build_blind_pack(
+                normalized_samples,
+                criteria,
+                seed=args.seed,
+                assignment_plan=assignment_plan,
+                generation_plan=generation_plan,
+            )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             print(error, file=sys.stderr)
             return 2
@@ -631,6 +660,17 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             stage_manifest_path = args.stage_manifest or args.stage_root / "blind-audio-manifest.json"
             _write_json(stage_manifest_path, stage_manifest)
+        return 0
+    if args.command == "build-listening-assignment-plan":
+        try:
+            result = build_listening_assignment_plan(
+                _read_json(args.generation_plan),
+                _read_json(args.routing),
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
         return 0
     if args.command == "score-objective":
         try:

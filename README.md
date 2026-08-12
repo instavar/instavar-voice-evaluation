@@ -247,18 +247,43 @@ The receipt detects substitution and mutation of declared inputs and outputs. It
 
 ## Build a blind listening pack
 
-Prepare a JSON array containing `sample_id`, `candidate_id`, `prompt_id`, and `audio_path`, plus a JSON array of criterion names. Then run:
+For a preregistered study, first bind each listening criterion to prompts that
+can support it. The checked-in Singapore English routing sends pronunciation
+review to the dedicated pronunciation prompt and prompts with lexical anchors,
+cadence and fatigue review to long-form prompts, emotion review to instructed
+emotion prompts, and broadly applicable criteria to all samples:
+
+```bash
+instavar-voice-eval build-listening-assignment-plan evaluation/generation-plan.json \
+  --routing reference/listening-routing-v1.json \
+  --output evaluation/listening-assignment-plan.json
+```
+
+The builder rejects unmatched criteria, category or lexical-anchor drift across
+candidates or seeds, candidate-asymmetric coverage, duplicate samples, and any
+sample left without a criterion. The output binds the routing and assignments
+to the exact generation-plan hash and includes a self-hash. Hashes make later
+mutation detectable, but do not prove that preregistration happened before
+generation without external server-stamped chronology.
+
+Prepare a JSON array containing `sample_id`, `candidate_id`, `prompt_id`,
+`seed`, and `audio_path` for every planned sample. Then run:
 
 ```bash
 instavar-voice-eval build-listening-pack samples.json \
-  --criteria criteria.json \
+  --assignment-plan evaluation/listening-assignment-plan.json \
+  --generation-plan evaluation/generation-plan.json \
   --review-output listening-review.json \
   --reveal-output reveal-mapping.json \
   --stage-root evaluation/listening \
   --seed 20260812
 ```
 
-The review file contains no candidate identifiers or source filenames. With
+The review file contains no candidate identifiers or source filenames. Each
+blind sample lists only its assigned criteria, so a complete ratings matrix no
+longer requires meaningless pronunciation scores for prompts without a target
+or cadence scores for short clips. The aggregator rejects ratings for criteria
+that were not assigned to that sample. With
 `--stage-root`, audio is copied to paths such as
 `blind_audio/sample-0001.wav`, and a hash manifest is written beside the staged
 files. Preserve the reveal mapping separately and do not open it until all
@@ -266,6 +291,11 @@ ratings are recorded. File staging does not strip embedded audio metadata, so
 inspect or normalize metadata separately if the source format can carry
 identity-bearing tags. The builder rejects mixed audio extensions because a
 format difference can itself reveal which runtime produced a sample.
+
+For compatibility with an older study that intentionally assigned every
+criterion to every sample, omit the two plan options and pass
+`--criteria criteria.json`. The resulting coverage report labels that mode
+`all_criteria_per_sample` rather than presenting it as plan-bound evidence.
 
 After reviewers finish, aggregate criterion-level results with the matching review and reveal files:
 
