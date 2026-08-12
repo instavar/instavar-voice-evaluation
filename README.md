@@ -221,18 +221,52 @@ stale, cross-stage, empty, mutated, or external files from satisfying a later
 run. Use a unique work directory for every experiment attempt rather than
 reusing or manually cleaning an old run directory.
 
+A repository with more than one adaptation or runtime recipe can declare a
+backend registry instead of relying on one conventionally named file:
+
+```json
+{
+  "schema_version": "1.0.0",
+  "backends": [
+    {
+      "backend_id": "example-lora-pytorch",
+      "spec": "instavar-voice-backend.json"
+    },
+    {
+      "backend_id": "example-full-sft-pytorch",
+      "spec": "instavar-voice-backend-full-sft.json"
+    }
+  ]
+}
+```
+
+Registry paths are relative to the registry file. Validation rejects path
+traversal, symlinks, missing or invalid specifications, duplicate IDs, duplicate
+paths, and an ID that differs from the referenced specification. Registered
+lifecycle execution automatically selects the unique recipe bound to the
+experiment's adaptation mode. If more than one recipe matches, selection fails
+closed until the caller supplies an explicit backend ID. An explicit selection
+still cannot override the experiment's adaptation mode.
+
 Validate and exercise the included lightweight backend:
 
 ```bash
 instavar-voice-eval validate-backend examples/fake-backend.json
+instavar-voice-eval validate-backend-registry examples/backend-registry.json
 instavar-voice-eval run-lifecycle \
   examples/fake-backend.json \
   examples/experiment-manifest.json \
   --work-dir /tmp/instavar-voice-fake-lifecycle
+instavar-voice-eval run-registered-lifecycle \
+  examples/backend-registry.json \
+  examples/experiment-manifest.json \
+  --work-dir /tmp/instavar-voice-registered-lifecycle
 ```
 
 The lifecycle report records commands, exit codes, timeouts, logs, artifact
-hashes, and the fail-closed stage boundary. A passed fake lifecycle proves
+hashes, and the fail-closed stage boundary. A registry-based report also records
+the registry hash, selected backend ID, selected specification path, and
+specification hash. A passed fake lifecycle proves
 orchestration and evidence generation only. It does not prove that a real model
 trains, synthesizes correct speech, or sounds good.
 
