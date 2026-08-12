@@ -9,7 +9,12 @@ from .audio_probe import compare_wav_probes, probe_wav
 from .comparison import compare_matched_candidates
 from .contracts import VALIDATORS, validate_document
 from .corpus import audit_corpus
-from .lifecycle import run_lifecycle, validate_backend_spec
+from .lifecycle import (
+    run_lifecycle,
+    run_registered_lifecycle,
+    validate_backend_registry,
+    validate_backend_spec,
+)
 from .listening import aggregate_listening_results, build_blind_pack, stage_blind_audio
 from .metrics import score_objective_observations
 from .suite import build_generation_plan, check_suite_coverage, validate_prompt_pack
@@ -125,6 +130,12 @@ def build_parser() -> argparse.ArgumentParser:
     backend = commands.add_parser("validate-backend", help="validate a lifecycle backend specification")
     backend.add_argument("spec", type=Path)
 
+    backend_registry = commands.add_parser(
+        "validate-backend-registry",
+        help="validate a repository registry of lifecycle backend specifications",
+    )
+    backend_registry.add_argument("registry", type=Path)
+
     lifecycle = commands.add_parser(
         "run-lifecycle",
         help="run fail-closed preflight, train, infer, evaluate, and package stages",
@@ -132,6 +143,15 @@ def build_parser() -> argparse.ArgumentParser:
     lifecycle.add_argument("backend", type=Path)
     lifecycle.add_argument("experiment", type=Path)
     lifecycle.add_argument("--work-dir", type=Path, required=True)
+
+    registered_lifecycle = commands.add_parser(
+        "run-registered-lifecycle",
+        help="select and run a backend from a validated repository registry",
+    )
+    registered_lifecycle.add_argument("registry", type=Path)
+    registered_lifecycle.add_argument("experiment", type=Path)
+    registered_lifecycle.add_argument("--backend-id")
+    registered_lifecycle.add_argument("--work-dir", type=Path, required=True)
 
     prompt_pack = commands.add_parser("validate-prompt-pack", help="validate a frozen prompt pack")
     prompt_pack.add_argument("path", type=Path)
@@ -284,9 +304,34 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(f"valid lifecycle backend: {args.spec}")
         return 0
+    if args.command == "validate-backend-registry":
+        try:
+            errors = validate_backend_registry(_read_json(args.registry), registry_path=args.registry)
+        except (OSError, json.JSONDecodeError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        if errors:
+            for error in errors:
+                print(error, file=sys.stderr)
+            return 1
+        print(f"valid lifecycle backend registry: {args.registry}")
+        return 0
     if args.command == "run-lifecycle":
         try:
             result = run_lifecycle(args.backend, args.experiment, args.work_dir)
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result["status"] == "passed" else 1
+    if args.command == "run-registered-lifecycle":
+        try:
+            result = run_registered_lifecycle(
+                args.registry,
+                args.experiment,
+                args.work_dir,
+                backend_id=args.backend_id,
+            )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             print(error, file=sys.stderr)
             return 2

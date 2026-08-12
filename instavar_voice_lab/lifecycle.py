@@ -11,7 +11,6 @@ from typing import Any
 
 from .contracts import validate_capability_manifest, validate_experiment_manifest
 
-
 STAGES = ("preflight", "train", "infer", "evaluate", "package")
 SENSITIVE_ENV_FRAGMENTS = ("secret", "token", "password", "api_key", "credential")
 RESERVED_ENV_NAMES = {
@@ -82,6 +81,15 @@ def _verify_artifact_records(records: list[dict[str, Any]], *, root: Path) -> No
         current = _artifact_record(root / record["path"], root=root)
         if current != record:
             raise ValueError(f"lifecycle artifact changed after hashing: {record['path']}")
+
+
+def _relative_path_has_symlink(root: Path, relative_path: Path) -> bool:
+    current = root
+    for part in relative_path.parts:
+        current = current / part
+        if current.is_symlink():
+            return True
+    return False
 
 
 def _validate_capability_binding(spec: dict[str, Any], spec_path: Path | None, errors: list[str]) -> None:
@@ -234,6 +242,138 @@ def validate_backend_spec(spec: Any, *, spec_path: Path | None = None) -> list[s
                 errors.append(f"required_environment and environment both declare {name}")
         _validate_capability_binding(spec, spec_path, errors)
     return errors
+
+
+def validate_backend_registry(registry: Any, *, registry_path: Path | None = None) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(registry, dict):
+        return ["backend registry must be an object"]
+    if registry.get("schema_version") != "1.0.0":
+        errors.append("schema_version must equal 1.0.0")
+    entries = registry.get("backends")
+    if not isinstance(entries, list) or not entries:
+        errors.append("backends must be a non-empty array")
+        return errors
+    if registry_path is not None and registry_path.is_symlink():
+        errors.append("backend registry must not be a symlink")
+
+    backend_ids: list[str] = []
+    spec_paths: list[str] = []
+    for index, entry in enumerate(entries):
+        prefix = f"backends[{index}]"
+        if not isinstance(entry, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        backend_id = entry.get("backend_id")
+        spec_text = entry.get("spec")
+        if not isinstance(backend_id, str) or not backend_id.strip():
+            errors.append(f"{prefix}.backend_id must be a non-empty string")
+        else:
+            backend_ids.append(backend_id)
+        if not isinstance(spec_text, str) or not spec_text:
+            errors.append(f"{prefix}.spec must be a non-empty relative path")
+            continue
+        spec_path = Path(spec_text)
+        if spec_path.is_absolute() or ".." in spec_path.parts:
+            errors.append(f"{prefix}.spec must be a safe relative path")
+            continue
+        normalized_spec = spec_path.as_posix()
+        spec_paths.append(normalized_spec)
+        if registry_path is None:
+            continue
+        resolved_spec = registry_path.parent / spec_path
+        if _relative_path_has_symlink(registry_path.parent, spec_path):
+            errors.append(f"{prefix}.spec path must not contain symlinks")
+            continue
+        try:
+            if not resolved_spec.resolve().is_relative_to(registry_path.parent.resolve()):
+                errors.append(f"{prefix}.spec resolves outside the registry directory")
+                continue
+            spec = _read_json(resolved_spec)
+        except (OSError, json.JSONDecodeError) as error:
+            errors.append(f"{prefix}.spec could not be read: {error}")
+            continue
+        spec_errors = validate_backend_spec(spec, spec_path=resolved_spec)
+        errors.extend(f"{prefix}.spec is invalid: {error}" for error in spec_errors)
+        if isinstance(backend_id, str) and spec.get("backend_id") != backend_id:
+            errors.append(f"{prefix}.backend_id does not match the referenced backend spec")
+
+    if len(backend_ids) != len(set(backend_ids)):
+        errors.append("backend registry backend_ids must not contain duplicates")
+    if len(spec_paths) != len(set(spec_paths)):
+        errors.append("backend registry spec paths must not contain duplicates")
+    return errors
+
+
+def resolve_backend_spec(registry_path: Path, experiment_path: Path, *, backend_id: str | None = None) -> Path:
+    registry = _read_json(registry_path)
+    errors = validate_backend_registry(registry, registry_path=registry_path)
+    if errors:
+        raise ValueError("invalid backend registry: " + "; ".join(errors))
+    experiment = _read_json(experiment_path)
+    experiment_errors = validate_experiment_manifest(experiment)
+    if experiment_errors:
+        raise ValueError("invalid experiment manifest: " + "; ".join(str(error) for error in experiment_errors))
+
+    entries = registry["backends"]
+    selected: list[dict[str, Any]]
+    if backend_id is not None:
+        selected = [entry for entry in entries if entry["backend_id"] == backend_id]
+        if not selected:
+            raise ValueError(f"backend registry does not contain backend_id: {backend_id}")
+    else:
+        adaptation_mode = experiment["adaptation_mode"]
+        selected = []
+        for entry in entries:
+            spec = _read_json(registry_path.parent / entry["spec"])
+            if spec["capability_binding"]["adaptation"] == adaptation_mode:
+                selected.append(entry)
+        if not selected:
+            raise ValueError(f"backend registry has no recipe for adaptation_mode: {adaptation_mode}")
+        if len(selected) > 1:
+            matching_ids = ", ".join(sorted(entry["backend_id"] for entry in selected))
+            raise ValueError(
+                f"backend registry has multiple recipes for adaptation_mode {adaptation_mode}: {matching_ids}; "
+                "select one with --backend-id"
+            )
+
+    selected_path = registry_path.parent / selected[0]["spec"]
+    selected_spec = _read_json(selected_path)
+    if selected_spec["capability_binding"]["adaptation"] != experiment["adaptation_mode"]:
+        raise ValueError("selected backend adaptation does not match the experiment adaptation_mode")
+    return selected_path
+
+
+def run_registered_lifecycle(
+    registry_path: Path,
+    experiment_path: Path,
+    work_dir: Path,
+    *,
+    backend_id: str | None = None,
+) -> dict[str, Any]:
+    spec_path = resolve_backend_spec(registry_path, experiment_path, backend_id=backend_id)
+    registry_sha256 = _sha256(registry_path)
+    spec_sha256 = _sha256(spec_path)
+    result = run_lifecycle(spec_path, experiment_path, work_dir)
+    result["backend_registry"] = {
+        "schema_version": "1.0.0",
+        "sha256": registry_sha256,
+        "selected_backend_id": result["backend_id"],
+        "selected_spec": spec_path.relative_to(registry_path.parent).as_posix(),
+        "selected_spec_sha256": spec_sha256,
+    }
+    try:
+        control_inputs_changed = _sha256(registry_path) != registry_sha256 or _sha256(spec_path) != spec_sha256
+    except OSError:
+        control_inputs_changed = True
+    if control_inputs_changed:
+        result["status"] = "failed"
+        result["error"] = "backend registry or selected specification changed during the lifecycle"
+        result["finished_at"] = _now()
+        _write_json(work_dir / "lifecycle-report.json", result)
+        raise ValueError(result["error"])
+    _write_json(work_dir / "lifecycle-report.json", result)
+    return result
 
 
 def run_lifecycle(spec_path: Path, experiment_path: Path, work_dir: Path) -> dict[str, Any]:

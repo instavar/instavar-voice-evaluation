@@ -5,9 +5,15 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from instavar_voice_lab.lifecycle import run_lifecycle, validate_backend_spec
-
+from instavar_voice_lab.lifecycle import (
+    resolve_backend_spec,
+    run_lifecycle,
+    run_registered_lifecycle,
+    validate_backend_registry,
+    validate_backend_spec,
+)
 
 ROOT = Path(__file__).parents[1]
 
@@ -19,6 +25,15 @@ def write_backend_fixture(directory: Path, filename: str, spec: dict[str, object
         (ROOT / "examples" / "capability-manifest.json").read_text(), encoding="utf-8"
     )
     return spec_path
+
+
+def write_registry_fixture(directory: Path, entries: list[dict[str, str]]) -> Path:
+    registry_path = directory / "backend-registry.json"
+    registry_path.write_text(
+        json.dumps({"schema_version": "1.0.0", "backends": entries}),
+        encoding="utf-8",
+    )
+    return registry_path
 
 
 class LifecycleTests(unittest.TestCase):
@@ -178,6 +193,145 @@ class LifecycleTests(unittest.TestCase):
             )
             self.assertEqual(result["status"], "failed")
             self.assertIn("timeout", result["stages"][0]["error"])
+
+    def test_backend_registry_validates_and_runs_unique_adaptation(self) -> None:
+        self.assertEqual(
+            validate_backend_registry(
+                json.loads((ROOT / "examples" / "backend-registry.json").read_text()),
+                registry_path=ROOT / "examples" / "backend-registry.json",
+            ),
+            [],
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_registered_lifecycle(
+                ROOT / "examples" / "backend-registry.json",
+                ROOT / "examples" / "experiment-manifest.json",
+                Path(temporary),
+            )
+            self.assertEqual(result["status"], "passed")
+            self.assertEqual(result["backend_registry"]["selected_backend_id"], "instavar-fake-backend")
+            self.assertEqual(result["backend_registry"]["selected_spec"], "fake-backend.json")
+            self.assertEqual(len(result["backend_registry"]["selected_spec_sha256"]), 64)
+
+    def test_backend_registry_rejects_duplicates_unsafe_paths_and_id_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture_dir = Path(temporary)
+            spec = json.loads((ROOT / "examples" / "fake-backend.json").read_text())
+            write_backend_fixture(fixture_dir, "fake-backend.json", spec)
+            registry_path = write_registry_fixture(
+                fixture_dir,
+                [
+                    {"backend_id": "wrong-id", "spec": "fake-backend.json"},
+                    {"backend_id": "wrong-id", "spec": "fake-backend.json"},
+                    {"backend_id": "escaped", "spec": "../escaped.json"},
+                ],
+            )
+            errors = validate_backend_registry(json.loads(registry_path.read_text()), registry_path=registry_path)
+            self.assertTrue(any("does not match" in error for error in errors))
+            self.assertTrue(any("backend_ids must not contain duplicates" in error for error in errors))
+            self.assertTrue(any("spec paths must not contain duplicates" in error for error in errors))
+            self.assertTrue(any("safe relative path" in error for error in errors))
+
+    def test_backend_registry_rejects_symlinked_registry_and_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture_dir = Path(temporary)
+            spec = json.loads((ROOT / "examples" / "fake-backend.json").read_text())
+            real_spec = write_backend_fixture(fixture_dir, "real-backend.json", spec)
+            linked_spec = fixture_dir / "linked-backend.json"
+            linked_spec.symlink_to(real_spec)
+            registry_path = write_registry_fixture(
+                fixture_dir,
+                [{"backend_id": spec["backend_id"], "spec": linked_spec.name}],
+            )
+            errors = validate_backend_registry(json.loads(registry_path.read_text()), registry_path=registry_path)
+            self.assertTrue(any("spec path must not contain symlinks" in error for error in errors))
+
+            nested_target = fixture_dir / "nested-target"
+            nested_target.mkdir()
+            write_backend_fixture(nested_target, "nested.json", spec)
+            linked_directory = fixture_dir / "linked-directory"
+            linked_directory.symlink_to(nested_target, target_is_directory=True)
+            nested_registry = write_registry_fixture(
+                fixture_dir,
+                [{"backend_id": spec["backend_id"], "spec": "linked-directory/nested.json"}],
+            )
+            errors = validate_backend_registry(json.loads(nested_registry.read_text()), registry_path=nested_registry)
+            self.assertTrue(any("spec path must not contain symlinks" in error for error in errors))
+
+            linked_registry = fixture_dir / "linked-registry.json"
+            linked_registry.symlink_to(registry_path)
+            errors = validate_backend_registry(json.loads(linked_registry.read_text()), registry_path=linked_registry)
+            self.assertTrue(any("registry must not be a symlink" in error for error in errors))
+
+    def test_backend_registry_requires_explicit_selection_when_adaptation_is_ambiguous(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture_dir = Path(temporary)
+            first = json.loads((ROOT / "examples" / "fake-backend.json").read_text())
+            second = json.loads((ROOT / "examples" / "fake-backend.json").read_text())
+            first["backend_id"] = "fake-lora-a"
+            second["backend_id"] = "fake-lora-b"
+            write_backend_fixture(fixture_dir, "a.json", first)
+            write_backend_fixture(fixture_dir, "b.json", second)
+            registry_path = write_registry_fixture(
+                fixture_dir,
+                [
+                    {"backend_id": "fake-lora-a", "spec": "a.json"},
+                    {"backend_id": "fake-lora-b", "spec": "b.json"},
+                ],
+            )
+            with self.assertRaisesRegex(ValueError, "multiple recipes"):
+                resolve_backend_spec(registry_path, ROOT / "examples" / "experiment-manifest.json")
+            selected = resolve_backend_spec(
+                registry_path,
+                ROOT / "examples" / "experiment-manifest.json",
+                backend_id="fake-lora-b",
+            )
+            self.assertEqual(selected.name, "b.json")
+
+    def test_explicit_backend_selection_cannot_override_experiment_adaptation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            experiment = json.loads((ROOT / "examples" / "experiment-manifest.json").read_text())
+            experiment["adaptation_mode"] = "full_sft"
+            experiment_path = Path(temporary) / "experiment.json"
+            experiment_path.write_text(json.dumps(experiment), encoding="utf-8")
+            work_dir = Path(temporary) / "work"
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                run_registered_lifecycle(
+                    ROOT / "examples" / "backend-registry.json",
+                    experiment_path,
+                    work_dir,
+                    backend_id="instavar-fake-backend",
+                )
+            self.assertFalse(work_dir.exists())
+
+    def test_registered_lifecycle_marks_report_failed_when_registry_mutates(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture_dir = Path(temporary)
+            spec = json.loads((ROOT / "examples" / "fake-backend.json").read_text())
+            write_backend_fixture(fixture_dir, "fake-backend.json", spec)
+            registry_path = write_registry_fixture(
+                fixture_dir,
+                [{"backend_id": spec["backend_id"], "spec": "fake-backend.json"}],
+            )
+            work_dir = fixture_dir / "work"
+
+            def mutate_registry(_spec_path: Path, _experiment_path: Path, target_work_dir: Path) -> dict[str, object]:
+                target_work_dir.mkdir()
+                registry_path.write_text(registry_path.read_text() + "\n", encoding="utf-8")
+                return {"backend_id": spec["backend_id"], "status": "passed"}
+
+            with (
+                patch("instavar_voice_lab.lifecycle.run_lifecycle", side_effect=mutate_registry),
+                self.assertRaisesRegex(ValueError, "changed during"),
+            ):
+                run_registered_lifecycle(
+                    registry_path,
+                    ROOT / "examples" / "experiment-manifest.json",
+                    work_dir,
+                )
+            report = json.loads((work_dir / "lifecycle-report.json").read_text())
+            self.assertEqual(report["status"], "failed")
+            self.assertIn("changed during", report["error"])
 
 
 if __name__ == "__main__":
