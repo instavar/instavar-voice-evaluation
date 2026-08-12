@@ -5,15 +5,31 @@
   "type": "object",
   "required": ["schema_version", "source_observations_sha256", "extractor", "results"],
   "properties": {
-    "schema_version": { "const": "1.0.0" },
+    "schema_version": { "const": "1.1.0" },
     "source_observations_sha256": { "$ref": "#/$defs/sha256" },
     "extractor": {
       "type": "object",
-      "required": ["kind", "name", "revision"],
+      "required": ["kind", "name", "revision", "artifact_set_sha256", "artifacts"],
       "properties": {
         "kind": { "enum": ["asr", "speaker_encoder", "audio_probe"] },
         "name": { "type": "string", "minLength": 1 },
-        "revision": { "type": "string", "minLength": 1 }
+        "revision": { "type": "string", "minLength": 1 },
+        "artifact_set_sha256": { "$ref": "#/$defs/sha256" },
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/artifact" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "reference": {
+      "type": "object",
+      "required": ["reference_id", "audio", "transcript"],
+      "properties": {
+        "reference_id": { "$ref": "#/$defs/identifier" },
+        "audio": { "$ref": "#/$defs/fileFingerprint" },
+        "transcript": { "$ref": "#/$defs/fileFingerprint" }
       },
       "additionalProperties": false
     },
@@ -33,19 +49,70 @@
         "allOf": [
           {
             "if": { "properties": { "status": { "const": "complete" } } },
-            "then": { "required": ["values"] }
+            "then": {
+              "required": ["values"],
+              "not": {
+                "anyOf": [{ "required": ["error_type"] }, { "required": ["error"] }]
+              }
+            }
           },
           {
             "if": { "properties": { "status": { "const": "failed" } } },
-            "then": { "required": ["error_type", "error"] }
+            "then": {
+              "required": ["error_type", "error"],
+              "not": { "required": ["values"] }
+            }
           }
         ],
         "additionalProperties": false
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "extractor": {
+            "properties": { "kind": { "const": "speaker_encoder" } },
+            "required": ["kind"]
+          }
+        },
+        "required": ["extractor"]
+      },
+      "then": { "required": ["reference"] },
+      "else": { "not": { "required": ["reference"] } }
+    }
+  ],
   "additionalProperties": false,
   "$defs": {
+    "artifact": {
+      "type": "object",
+      "required": ["role", "kind", "sha256", "bytes"],
+      "properties": {
+        "role": { "$ref": "#/$defs/identifier" },
+        "kind": { "enum": ["file", "tree"] },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "file_count": { "type": "integer", "minimum": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "tree" } } },
+          "then": { "required": ["file_count"] },
+          "else": { "not": { "required": ["file_count"] } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "fileFingerprint": {
+      "type": "object",
+      "required": ["sha256", "bytes"],
+      "properties": {
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
     "identifier": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9._-]*$"

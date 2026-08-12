@@ -162,6 +162,7 @@ class MetricTests(unittest.TestCase):
                     "extractor": "asr",
                     "revision": "1",
                     "input_audio_sha256": "a" * 64,
+                    "extractor_artifact_set_sha256": "c" * 64,
                 }
             },
         }
@@ -169,6 +170,57 @@ class MetricTests(unittest.TestCase):
         self.assertTrue(result["metric_provenance"]["asr"]["all_content_bound"])
         row["evidence"]["asr"]["input_audio_sha256"] = "b" * 64
         with self.assertRaisesRegex(ValueError, "must match audio_sha256"):
+            score_objective_observations([row])
+
+    def test_speaker_metric_is_unbound_without_complete_reference_identity(self) -> None:
+        row = {
+            "sample_id": "sample-1",
+            "candidate_id": "adapter",
+            "prompt_id": "p1",
+            "requested_text": "hello",
+            "valid": True,
+            "audio_sha256": "a" * 64,
+            "reference_speaker_embedding": [1, 0],
+            "speaker_embedding": [1, 0],
+            "evidence": {
+                "speaker_encoder": {
+                    "extractor": "speaker",
+                    "revision": "1",
+                    "input_audio_sha256": "a" * 64,
+                    "extractor_artifact_set_sha256": "b" * 64,
+                }
+            },
+        }
+        result = score_objective_observations([row])
+        self.assertFalse(result["metric_provenance"]["speaker_encoder"]["all_content_bound"])
+        row["evidence"]["speaker_encoder"].update(
+            {
+                "reference_id": "voice-1",
+                "reference_audio_sha256": "c" * 64,
+                "reference_transcript_sha256": "d" * 64,
+            }
+        )
+        result = score_objective_observations([row])
+        self.assertTrue(result["metric_provenance"]["speaker_encoder"]["all_content_bound"])
+
+    def test_rejects_partial_speaker_reference_identity(self) -> None:
+        row = {
+            "sample_id": "sample-1",
+            "candidate_id": "adapter",
+            "prompt_id": "p1",
+            "requested_text": "hello",
+            "valid": True,
+            "reference_speaker_embedding": [1, 0],
+            "speaker_embedding": [1, 0],
+            "evidence": {
+                "speaker_encoder": {
+                    "extractor": "speaker",
+                    "revision": "1",
+                    "reference_id": "voice-1",
+                }
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "reference binding must be complete"):
             score_objective_observations([row])
 
 

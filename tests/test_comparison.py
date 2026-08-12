@@ -175,6 +175,15 @@ class MatchedComparisonTests(unittest.TestCase):
         for row in rows:
             row["audio_sha256"] = "a" * 64
             row["evidence"]["asr"]["input_audio_sha256"] = "a" * 64
+        with self.assertRaisesRegex(ValueError, "must bind extractor_artifact_set_sha256"):
+            compare_matched_candidates(
+                rows,
+                plan=bound_plan,
+                baseline_candidate_id="base",
+                adapted_candidate_id="adapter",
+            )
+        for row in rows:
+            row["evidence"]["asr"]["extractor_artifact_set_sha256"] = "b" * 64
         result = compare_matched_candidates(
             rows,
             plan=bound_plan,
@@ -182,6 +191,54 @@ class MatchedComparisonTests(unittest.TestCase):
             adapted_candidate_id="adapter",
         )
         self.assertEqual(result["status"], "passed")
+
+    def test_plan_required_speaker_metric_must_bind_reference_identity(self) -> None:
+        rows = [observation("base", "p1", 42), observation("adapter", "p1", 42)]
+        bound_plan = generation_plan(rows)
+        bound_plan["schema_version"] = "1.1.0"
+        bound_plan["required_objective_metrics"] = ["speaker_embedding_similarity"]
+        for row in rows:
+            row["audio_sha256"] = "a" * 64
+            row["evidence"]["speaker_encoder"].update(
+                {
+                    "input_audio_sha256": "a" * 64,
+                    "extractor_artifact_set_sha256": "b" * 64,
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "must bind reference_id"):
+            compare_matched_candidates(
+                rows,
+                plan=bound_plan,
+                baseline_candidate_id="base",
+                adapted_candidate_id="adapter",
+            )
+        for row in rows:
+            row["evidence"]["speaker_encoder"].update(
+                {
+                    "reference_id": "voice-1",
+                    "reference_audio_sha256": "c" * 64,
+                    "reference_transcript_sha256": "d" * 64,
+                }
+            )
+        result = compare_matched_candidates(
+            rows,
+            plan=bound_plan,
+            baseline_candidate_id="base",
+            adapted_candidate_id="adapter",
+        )
+        self.assertEqual(result["status"], "passed")
+
+    def test_rejects_same_extractor_revision_with_different_artifacts(self) -> None:
+        rows = [observation("base", "p1", 42), observation("adapter", "p1", 42)]
+        rows[0]["evidence"]["asr"]["extractor_artifact_set_sha256"] = "a" * 64
+        rows[1]["evidence"]["asr"]["extractor_artifact_set_sha256"] = "b" * 64
+        with self.assertRaisesRegex(ValueError, "cannot mix extractor provenance"):
+            compare_matched_candidates(
+                rows,
+                plan=generation_plan(rows),
+                baseline_candidate_id="base",
+                adapted_candidate_id="adapter",
+            )
 
     def test_preserves_invalid_pair_in_validity_delta(self) -> None:
         rows = [observation("base", "p1", 42), observation("adapter", "p1", 42, valid=False)]

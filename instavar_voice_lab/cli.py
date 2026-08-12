@@ -9,7 +9,14 @@ from .audio_probe import compare_wav_probes, probe_wav
 from .comparison import compare_matched_candidates, compare_runtime_candidates
 from .contracts import VALIDATORS, validate_document
 from .corpus import audit_corpus
-from .extraction import apply_extractor_results, build_audio_probe_results, observation_document_sha256
+from .extraction import (
+    EXTRACTOR_FIELDS,
+    apply_extractor_results,
+    build_audio_probe_results,
+    build_extractor_identity,
+    build_speaker_reference_binding,
+    observation_document_sha256,
+)
 from .lifecycle import (
     run_lifecycle,
     run_registered_lifecycle,
@@ -180,6 +187,25 @@ def build_parser() -> argparse.ArgumentParser:
     audio_probe_results.add_argument("--extractor-revision", required=True)
     audio_probe_results.add_argument("--output", type=Path, required=True)
 
+    extractor_identity = commands.add_parser(
+        "build-extractor-identity",
+        help="fingerprint the exact implementation or model artifacts used by an extractor",
+    )
+    extractor_identity.add_argument("--kind", choices=sorted(EXTRACTOR_FIELDS), required=True)
+    extractor_identity.add_argument("--name", required=True)
+    extractor_identity.add_argument("--revision", required=True)
+    extractor_identity.add_argument("--artifact", action="append", required=True, help="ROLE=file|tree=PATH")
+    extractor_identity.add_argument("--output", type=Path, required=True)
+
+    speaker_reference = commands.add_parser(
+        "build-speaker-reference",
+        help="fingerprint the exact reference audio and transcript used by speaker scoring",
+    )
+    speaker_reference.add_argument("--reference-id", required=True)
+    speaker_reference.add_argument("--audio", type=Path, required=True)
+    speaker_reference.add_argument("--transcript", type=Path, required=True)
+    speaker_reference.add_argument("--output", type=Path, required=True)
+
     apply_results = commands.add_parser(
         "apply-extractor-results",
         help="immutably augment observations with content-addressed extractor results",
@@ -187,6 +213,14 @@ def build_parser() -> argparse.ArgumentParser:
     apply_results.add_argument("observations", type=Path)
     apply_results.add_argument("results", type=Path)
     apply_results.add_argument("--audio-base-dir", type=Path, required=True)
+    apply_results.add_argument(
+        "--extractor-artifact",
+        action="append",
+        default=[],
+        help="live ROLE=file|tree=PATH declaration; required for external extractors",
+    )
+    apply_results.add_argument("--reference-audio", type=Path)
+    apply_results.add_argument("--reference-transcript", type=Path)
     apply_results.add_argument("--output", type=Path, required=True)
 
     fingerprint_observations = commands.add_parser(
@@ -463,12 +497,41 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         _write_json(args.output, result)
         return 0
+    if args.command == "build-extractor-identity":
+        try:
+            result = build_extractor_identity(
+                kind=args.kind,
+                name=args.name,
+                revision=args.revision,
+                artifacts=_artifact_declarations(args.artifact),
+            )
+        except (OSError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0
+    if args.command == "build-speaker-reference":
+        try:
+            result = build_speaker_reference_binding(
+                reference_id=args.reference_id,
+                audio_path=args.audio,
+                transcript_path=args.transcript,
+            )
+        except (OSError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0
     if args.command == "apply-extractor-results":
         try:
+            artifacts = _artifact_declarations(args.extractor_artifact) if args.extractor_artifact else None
             result = apply_extractor_results(
                 _read_json(args.observations),
                 _read_json(args.results),
                 audio_base_dir=args.audio_base_dir,
+                extractor_artifacts=artifacts,
+                reference_audio_path=args.reference_audio,
+                reference_transcript_path=args.reference_transcript,
             )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             print(error, file=sys.stderr)

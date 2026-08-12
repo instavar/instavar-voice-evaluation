@@ -11,7 +11,6 @@ from typing import Any
 from .metrics import bootstrap_mean_interval, score_objective_observations
 from .runtime_artifacts import exact_runtime_binding, verify_runtime_artifact_manifest
 
-
 METRIC_DIRECTIONS = {
     "asr_word_error_rate": "lower_is_better",
     "speaker_embedding_similarity": "higher_is_better",
@@ -95,9 +94,7 @@ def _validate_plan_binding(
         requirements.get(key) is not True
         for key in ("same_transcripts", "frozen_generation_settings", "record_failures_as_observations")
     ):
-        raise ValueError(
-            "generation plan must require same transcripts, frozen settings, and failure observations"
-        )
+        raise ValueError("generation plan must require same transcripts, frozen settings, and failure observations")
     expected: dict[str, dict[str, Any]] = {}
     for index, row in enumerate(plan_rows):
         if not isinstance(row, dict):
@@ -118,8 +115,7 @@ def _validate_plan_binding(
         missing = sorted(set(expected) - observed_ids)
         unexpected = sorted(observed_ids - set(expected))
         raise ValueError(
-            "matched comparison observations must exactly cover the plan; "
-            f"missing={missing}; unexpected={unexpected}"
+            f"matched comparison observations must exactly cover the plan; missing={missing}; unexpected={unexpected}"
         )
     for index, row in enumerate(rows):
         sample_id = str(row.get("sample_id", ""))
@@ -155,7 +151,11 @@ def _validate_plan_binding(
     }
 
 
-def _evidence_signature(row: dict[str, Any], kind: str, index: int) -> tuple[str, str] | None:
+def _evidence_signature(
+    row: dict[str, Any],
+    kind: str,
+    index: int,
+) -> tuple[str, str, str, str, str, str] | None:
     evidence = row.get("evidence")
     if not isinstance(evidence, dict) or kind not in evidence:
         return None
@@ -168,11 +168,44 @@ def _evidence_signature(row: dict[str, Any], kind: str, index: int) -> tuple[str
         raise ValueError(f"observation {index} evidence.{kind}.extractor must be non-empty")
     if not isinstance(revision, str) or not revision.strip():
         raise ValueError(f"observation {index} evidence.{kind}.revision must be non-empty")
-    return extractor.strip(), revision.strip()
+    artifact_sha = record.get("extractor_artifact_set_sha256")
+    if artifact_sha is not None and (
+        not isinstance(artifact_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", artifact_sha)
+    ):
+        raise ValueError(
+            f"observation {index} evidence.{kind}.extractor_artifact_set_sha256 must be a lowercase SHA-256"
+        )
+    reference_id = record.get("reference_id")
+    reference_audio_sha = record.get("reference_audio_sha256")
+    reference_transcript_sha = record.get("reference_transcript_sha256")
+    reference_values = (reference_id, reference_audio_sha, reference_transcript_sha)
+    if any(value is not None for value in reference_values):
+        if kind != "speaker_encoder":
+            raise ValueError(f"observation {index} evidence.{kind} must not declare a speaker reference")
+        if not all(value is not None for value in reference_values):
+            raise ValueError(f"observation {index} evidence.speaker_encoder reference binding must be complete")
+        if not isinstance(reference_id, str) or not reference_id.strip():
+            raise ValueError(f"observation {index} evidence.speaker_encoder.reference_id must be non-empty")
+        for field_name, value in (
+            ("reference_audio_sha256", reference_audio_sha),
+            ("reference_transcript_sha256", reference_transcript_sha),
+        ):
+            if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+                raise ValueError(
+                    f"observation {index} evidence.speaker_encoder.{field_name} must be a lowercase SHA-256"
+                )
+    return (
+        extractor.strip(),
+        revision.strip(),
+        artifact_sha or "",
+        reference_id or "",
+        reference_audio_sha or "",
+        reference_transcript_sha or "",
+    )
 
 
-def _provenance(rows: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
-    by_kind: dict[str, set[tuple[str, str]]] = defaultdict(set)
+def _provenance(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    by_kind: dict[str, set[tuple[str, str, str, str, str, str]]] = defaultdict(set)
     for index, row in enumerate(rows):
         for kind in set(METRIC_EVIDENCE_KINDS.values()):
             signature = _evidence_signature(row, kind, index)
@@ -180,13 +213,21 @@ def _provenance(rows: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
                 by_kind[kind].add(signature)
     mixed = {kind: sorted(signatures) for kind, signatures in by_kind.items() if len(signatures) > 1}
     if mixed:
-        details = "; ".join(
-            f"{kind}={','.join(f'{extractor}@{revision}' for extractor, revision in signatures)}"
-            for kind, signatures in sorted(mixed.items())
-        )
+        rendered: list[str] = []
+        for kind, signatures in sorted(mixed.items()):
+            values = ",".join(f"{signature[0]}@{signature[1]}#{signature[2] or 'unbound'}" for signature in signatures)
+            rendered.append(f"{kind}={values}")
+        details = "; ".join(rendered)
         raise ValueError(f"matched comparison cannot mix extractor provenance: {details}")
     return {
-        kind: {"extractor": next(iter(signatures))[0], "revision": next(iter(signatures))[1]}
+        kind: {
+            "extractor": next(iter(signatures))[0],
+            "revision": next(iter(signatures))[1],
+            "extractor_artifact_set_sha256": next(iter(signatures))[2] or None,
+            "reference_id": next(iter(signatures))[3] or None,
+            "reference_audio_sha256": next(iter(signatures))[4] or None,
+            "reference_transcript_sha256": next(iter(signatures))[5] or None,
+        }
         for kind, signatures in sorted(by_kind.items())
         if signatures
     }
@@ -197,11 +238,7 @@ def _validate_content_bound_required_metrics(
     required_metrics: list[str],
     index: int,
 ) -> None:
-    required_kinds = {
-        kind
-        for metric in required_metrics
-        if (kind := CONTENT_BOUND_EVIDENCE.get(metric)) is not None
-    }
+    required_kinds = {kind for metric in required_metrics if (kind := CONTENT_BOUND_EVIDENCE.get(metric)) is not None}
     if not required_kinds:
         return
     audio_sha = row.get("audio_sha256")
@@ -211,9 +248,22 @@ def _validate_content_bound_required_metrics(
     for kind in sorted(required_kinds):
         record = evidence.get(kind) if isinstance(evidence, dict) else None
         if not isinstance(record, dict) or record.get("input_audio_sha256") != audio_sha:
-            raise ValueError(
-                f"observation {index} evidence.{kind}.input_audio_sha256 must match audio_sha256"
-            )
+            raise ValueError(f"observation {index} evidence.{kind}.input_audio_sha256 must match audio_sha256")
+        artifact_sha = record.get("extractor_artifact_set_sha256")
+        if not isinstance(artifact_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", artifact_sha):
+            raise ValueError(f"observation {index} evidence.{kind} must bind extractor_artifact_set_sha256")
+        if kind == "speaker_encoder":
+            reference_id = record.get("reference_id")
+            reference_audio_sha = record.get("reference_audio_sha256")
+            reference_transcript_sha = record.get("reference_transcript_sha256")
+            if not isinstance(reference_id, str) or not reference_id.strip():
+                raise ValueError(f"observation {index} evidence.speaker_encoder must bind reference_id")
+            for field_name, value in (
+                ("reference_audio_sha256", reference_audio_sha),
+                ("reference_transcript_sha256", reference_transcript_sha),
+            ):
+                if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+                    raise ValueError(f"observation {index} evidence.speaker_encoder must bind {field_name}")
 
 
 def compare_matched_candidates(
@@ -418,11 +468,7 @@ def compare_runtime_candidates(
         base_dir=artifact_base_dir,
     )
     binding = exact_runtime_binding(artifact_manifest, {reference_runtime_id, candidate_runtime_id})
-    selected = [
-        row
-        for row in rows
-        if row.get("candidate_id") in {reference_candidate_id, candidate_candidate_id}
-    ]
+    selected = [row for row in rows if row.get("candidate_id") in {reference_candidate_id, candidate_candidate_id}]
     if not selected:
         raise ValueError("no observations matched the requested runtime candidates")
     expected_runtime = {

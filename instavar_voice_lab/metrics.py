@@ -8,7 +8,6 @@ from typing import Any, Iterable
 
 from .observations import validate_objective_observations
 
-
 TOKEN_RE = re.compile(r"[\w']+", re.UNICODE)
 
 
@@ -109,7 +108,7 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
     seen: set[str] = set()
     per_candidate: dict[str, dict[str, Any]] = {}
     per_sample: list[dict[str, Any]] = []
-    evidence_signatures: dict[str, set[tuple[str, str]]] = {}
+    evidence_signatures: dict[str, set[tuple[str, str, str, str, str, str]]] = {}
     evidence_content_binding: dict[str, dict[str, int]] = {}
 
     for index, row in enumerate(rows):
@@ -169,24 +168,61 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
                 raise ValueError(f"observation {index} evidence.{kind}.extractor must be non-empty")
             if not isinstance(record.get("revision"), str) or not record["revision"].strip():
                 raise ValueError(f"observation {index} evidence.{kind}.revision must be non-empty")
+            artifact_sha = record.get("extractor_artifact_set_sha256")
+            if artifact_sha is not None and (
+                not isinstance(artifact_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", artifact_sha)
+            ):
+                raise ValueError(
+                    f"observation {index} evidence.{kind}.extractor_artifact_set_sha256 must be a lowercase SHA-256"
+                )
+            reference_id = record.get("reference_id")
+            reference_audio_sha = record.get("reference_audio_sha256")
+            reference_transcript_sha = record.get("reference_transcript_sha256")
+            reference_values = (reference_id, reference_audio_sha, reference_transcript_sha)
+            if kind == "speaker_encoder":
+                if any(value is not None for value in reference_values) and not all(
+                    value is not None for value in reference_values
+                ):
+                    raise ValueError(f"observation {index} evidence.speaker_encoder reference binding must be complete")
+                if reference_id is not None and (not isinstance(reference_id, str) or not reference_id.strip()):
+                    raise ValueError(f"observation {index} evidence.speaker_encoder.reference_id must be non-empty")
+                for field_name, value in (
+                    ("reference_audio_sha256", reference_audio_sha),
+                    ("reference_transcript_sha256", reference_transcript_sha),
+                ):
+                    if value is not None and (not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)):
+                        raise ValueError(
+                            f"observation {index} evidence.speaker_encoder.{field_name} must be a lowercase SHA-256"
+                        )
+            elif any(value is not None for value in reference_values):
+                raise ValueError(f"observation {index} evidence.{kind} must not declare a speaker reference")
             evidence_signatures.setdefault(kind, set()).add(
-                (record["extractor"].strip(), record["revision"].strip())
+                (
+                    record["extractor"].strip(),
+                    record["revision"].strip(),
+                    artifact_sha or "",
+                    reference_id or "",
+                    reference_audio_sha or "",
+                    reference_transcript_sha or "",
+                )
             )
             binding = evidence_content_binding.setdefault(kind, {"bound": 0, "unbound": 0})
             input_audio_sha = record.get("input_audio_sha256")
-            if input_audio_sha is None:
-                binding["unbound"] += 1
-            else:
+            audio_bound = input_audio_sha is not None
+            if audio_bound:
                 audio_sha = row.get("audio_sha256")
                 if (
                     not isinstance(input_audio_sha, str)
                     or not re.fullmatch(r"[0-9a-f]{64}", input_audio_sha)
                     or input_audio_sha != audio_sha
                 ):
-                    raise ValueError(
-                        f"observation {index} evidence.{kind}.input_audio_sha256 must match audio_sha256"
-                    )
+                    raise ValueError(f"observation {index} evidence.{kind}.input_audio_sha256 must match audio_sha256")
+            reference_bound = kind != "speaker_encoder" or all(value is not None for value in reference_values)
+            if audio_bound and artifact_sha is not None and reference_bound:
                 binding["bound"] += 1
+            else:
+                binding["unbound"] += 1
+
         if row["valid"]:
             candidate["valid"] += 1
 
@@ -288,9 +324,7 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
                 ),
                 "real_time_factor": _metric_summary(values["real_time_factor"], seed=candidate_seed + 3),
                 "generation_seconds": _metric_summary(values["generation_seconds"], seed=candidate_seed + 4),
-                "audio_duration_seconds": _metric_summary(
-                    values["audio_duration_seconds"], seed=candidate_seed + 5
-                ),
+                "audio_duration_seconds": _metric_summary(values["audio_duration_seconds"], seed=candidate_seed + 5),
                 "peak_memory_bytes": _metric_summary(values["peak_memory_bytes"], seed=candidate_seed + 6),
                 "sample_rate_hz": _metric_summary(values["sample_rate_hz"], seed=candidate_seed + 7),
                 "silence_fraction": _metric_summary(values["silence_fraction"], seed=candidate_seed + 8),
@@ -351,20 +385,30 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
         "proves_perceptual_quality": False,
         "observation_contract": {
             "version": "1.0.0",
-            "versioned_sample_count": sum(
-                row.get("observation_schema_version") == "1.0.0" for row in rows
-            ),
-            "unversioned_sample_count": sum(
-                "observation_schema_version" not in row for row in rows
-            ),
+            "versioned_sample_count": sum(row.get("observation_schema_version") == "1.0.0" for row in rows),
+            "unversioned_sample_count": sum("observation_schema_version" not in row for row in rows),
         },
         "bootstrap_seed": seed,
         "metric_provenance": {
             kind: {
                 "consistent": len(signatures) == 1,
                 "extractors": [
-                    {"extractor": extractor, "revision": revision}
-                    for extractor, revision in sorted(signatures)
+                    {
+                        "extractor": extractor,
+                        "revision": revision,
+                        "extractor_artifact_set_sha256": artifact_sha or None,
+                        "reference_id": reference_id or None,
+                        "reference_audio_sha256": reference_audio_sha or None,
+                        "reference_transcript_sha256": reference_transcript_sha or None,
+                    }
+                    for (
+                        extractor,
+                        revision,
+                        artifact_sha,
+                        reference_id,
+                        reference_audio_sha,
+                        reference_transcript_sha,
+                    ) in sorted(signatures)
                 ],
                 "content_bound_count": evidence_content_binding[kind]["bound"],
                 "unbound_count": evidence_content_binding[kind]["unbound"],

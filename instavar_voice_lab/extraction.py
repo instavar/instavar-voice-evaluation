@@ -10,16 +10,19 @@ from pathlib import Path
 from typing import Any
 
 from .audio_probe import probe_wav
+from .lineage import KINDS, fingerprint_artifact
 from .observations import validate_objective_observations
 
-
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 MUTABLE_REVISIONS = {"latest", "main", "master", "head", "unknown", "unversioned"}
+EXTRACTION_SCHEMA_VERSION = "1.1.0"
 EXTRACTOR_FIELDS = {
     "asr": {"hypothesis_text"},
     "speaker_encoder": {"reference_speaker_embedding", "speaker_embedding"},
     "audio_probe": {"sample_rate_hz", "silence_fraction", "clipping_fraction"},
 }
+BUILTIN_AUDIO_PROBE_NAME = "instavar_voice_lab.audio_probe"
 
 
 def _canonical_sha256(value: Any) -> str:
@@ -33,6 +36,83 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _immutable_revision(value: Any) -> str:
+    revision = value.strip() if isinstance(value, str) else ""
+    if not revision or revision.casefold() in MUTABLE_REVISIONS:
+        raise ValueError("extractor revision must be non-empty and immutable")
+    return revision
+
+
+def _extractor_artifact_records(
+    artifacts: dict[str, tuple[Path, str]],
+) -> tuple[list[dict[str, Any]], str]:
+    if not isinstance(artifacts, dict) or not artifacts:
+        raise ValueError("extractor artifacts must contain at least one artifact")
+    records: list[dict[str, Any]] = []
+    for role, declaration in sorted(artifacts.items()):
+        if not isinstance(role, str) or not IDENTIFIER_RE.fullmatch(role):
+            raise ValueError("extractor artifact roles must be stable lowercase identifiers")
+        if (
+            not isinstance(declaration, tuple)
+            or len(declaration) != 2
+            or not isinstance(declaration[0], Path)
+            or declaration[1] not in KINDS
+        ):
+            raise ValueError(f"extractor artifact {role} must declare a Path and file or tree kind")
+        record = fingerprint_artifact(declaration[0], role=role, kind=declaration[1])
+        if record["bytes"] <= 0:
+            raise ValueError(f"extractor artifact must not be empty: {role}")
+        records.append(record)
+    return records, _canonical_sha256(records)
+
+
+def build_extractor_identity(
+    *,
+    kind: str,
+    name: str,
+    revision: str,
+    artifacts: dict[str, tuple[Path, str]],
+) -> dict[str, Any]:
+    if kind not in EXTRACTOR_FIELDS:
+        raise ValueError("unsupported extractor kind")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("extractor name must be non-empty")
+    records, artifact_set_sha256 = _extractor_artifact_records(artifacts)
+    return {
+        "kind": kind,
+        "name": name.strip(),
+        "revision": _immutable_revision(revision),
+        "artifact_set_sha256": artifact_set_sha256,
+        "artifacts": records,
+    }
+
+
+def _reference_file(path: Path, label: str) -> dict[str, Any]:
+    record = fingerprint_artifact(path, role=label, kind="file")
+    if record["bytes"] <= 0:
+        raise ValueError(f"speaker reference {label} must not be empty")
+    return {"sha256": record["sha256"], "bytes": record["bytes"]}
+
+
+def build_speaker_reference_binding(
+    *,
+    reference_id: str,
+    audio_path: Path,
+    transcript_path: Path,
+) -> dict[str, Any]:
+    if not isinstance(reference_id, str) or not IDENTIFIER_RE.fullmatch(reference_id):
+        raise ValueError("speaker reference id must be a stable lowercase identifier")
+    return {
+        "reference_id": reference_id,
+        "audio": _reference_file(audio_path, "reference_audio"),
+        "transcript": _reference_file(transcript_path, "reference_transcript"),
+    }
+
+
+def _builtin_audio_probe_artifacts() -> dict[str, tuple[Path, str]]:
+    return {"implementation": (Path(__file__).with_name("audio_probe.py"), "file")}
 
 
 def _audio_file(row: dict[str, Any], base_dir: Path, index: int) -> tuple[Path, str]:
@@ -93,9 +173,7 @@ def _validate_values(kind: str, values: dict[str, Any], sample_id: str) -> None:
         ):
             raise ValueError(f"speaker embeddings must be non-empty equal-length arrays for sample_id: {sample_id}")
         if any(
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
+            isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value))
             for value in [*reference, *candidate]
         ):
             raise ValueError(f"speaker embeddings must contain finite numbers for sample_id: {sample_id}")
@@ -122,9 +200,12 @@ def build_audio_probe_results(
     extractor_revision: str,
 ) -> dict[str, Any]:
     rows = _validated_source_rows(observations)
-    revision = extractor_revision.strip() if isinstance(extractor_revision, str) else ""
-    if not revision or revision.casefold() in MUTABLE_REVISIONS:
-        raise ValueError("extractor revision must be non-empty and immutable")
+    extractor = build_extractor_identity(
+        kind="audio_probe",
+        name=BUILTIN_AUDIO_PROBE_NAME,
+        revision=extractor_revision,
+        artifacts=_builtin_audio_probe_artifacts(),
+    )
 
     results: list[dict[str, Any]] = []
     for index, row in enumerate(rows):
@@ -153,13 +234,9 @@ def build_audio_probe_results(
             )
         results.append(result)
     return {
-        "schema_version": "1.0.0",
+        "schema_version": EXTRACTION_SCHEMA_VERSION,
         "source_observations_sha256": observation_document_sha256(rows),
-        "extractor": {
-            "kind": "audio_probe",
-            "name": "instavar_voice_lab.audio_probe",
-            "revision": revision,
-        },
+        "extractor": extractor,
         "results": results,
     }
 
@@ -169,10 +246,13 @@ def apply_extractor_results(
     extraction: Any,
     *,
     audio_base_dir: Path,
+    extractor_artifacts: dict[str, tuple[Path, str]] | None = None,
+    reference_audio_path: Path | None = None,
+    reference_transcript_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     rows = _validated_source_rows(observations)
-    if not isinstance(extraction, dict) or extraction.get("schema_version") != "1.0.0":
-        raise ValueError("extractor results must be a version 1.0.0 object")
+    if not isinstance(extraction, dict) or extraction.get("schema_version") != EXTRACTION_SCHEMA_VERSION:
+        raise ValueError(f"extractor results must be a version {EXTRACTION_SCHEMA_VERSION} object")
     source_sha = extraction.get("source_observations_sha256")
     if source_sha != observation_document_sha256(rows):
         raise ValueError("extractor results do not match the source observation document")
@@ -186,12 +266,50 @@ def apply_extractor_results(
         raise ValueError("unsupported extractor kind")
     if not isinstance(name, str) or not name.strip():
         raise ValueError("extractor name must be non-empty")
-    if (
-        not isinstance(revision, str)
-        or not revision.strip()
-        or revision.strip().casefold() in MUTABLE_REVISIONS
-    ):
-        raise ValueError("extractor revision must be non-empty and immutable")
+    revision = _immutable_revision(revision)
+    if extractor_artifacts is None:
+        if kind == "audio_probe" and name.strip() == BUILTIN_AUDIO_PROBE_NAME:
+            extractor_artifacts = _builtin_audio_probe_artifacts()
+        else:
+            raise ValueError("external extractor artifacts are required for live identity verification")
+    expected_extractor = build_extractor_identity(
+        kind=kind,
+        name=name,
+        revision=revision,
+        artifacts=extractor_artifacts,
+    )
+    if extractor != expected_extractor:
+        raise ValueError("extractor identity does not match the live artifact set")
+
+    reference: dict[str, Any] | None = None
+    if kind == "speaker_encoder":
+        raw_reference = extraction.get("reference")
+        if not isinstance(raw_reference, dict):
+            raise ValueError("speaker extractor results must bind a speaker reference")
+        if reference_audio_path is None or reference_transcript_path is None:
+            raise ValueError("speaker reference audio and transcript paths are required")
+        reference_id = raw_reference.get("reference_id")
+        reference = build_speaker_reference_binding(
+            reference_id=reference_id,
+            audio_path=reference_audio_path,
+            transcript_path=reference_transcript_path,
+        )
+        if raw_reference != reference:
+            raise ValueError("speaker reference identity does not match the live audio and transcript")
+    elif "reference" in extraction:
+        raise ValueError("speaker reference binding is only valid for speaker_encoder results")
+    elif reference_audio_path is not None or reference_transcript_path is not None:
+        raise ValueError("speaker reference paths are only valid for speaker_encoder results")
+    expected_document_fields = {
+        "schema_version",
+        "source_observations_sha256",
+        "extractor",
+        "results",
+    }
+    if kind == "speaker_encoder":
+        expected_document_fields.add("reference")
+    if set(extraction) != expected_document_fields:
+        raise ValueError(f"extractor result document must contain exactly {sorted(expected_document_fields)}")
 
     raw_results = extraction.get("results")
     if not isinstance(raw_results, list):
@@ -224,6 +342,15 @@ def apply_extractor_results(
         status = result.get("status")
         if status not in {"complete", "failed"}:
             raise ValueError(f"extractor result status must be complete or failed for sample_id: {sample_id}")
+        expected_result_fields = {"sample_id", "audio_sha256", "status"}
+        if status == "complete":
+            expected_result_fields.add("values")
+        else:
+            expected_result_fields.update({"error_type", "error"})
+        if set(result) != expected_result_fields:
+            raise ValueError(
+                f"extractor result must contain exactly {sorted(expected_result_fields)} for sample_id: {sample_id}"
+            )
         target = output[index]
         evidence = target.setdefault("evidence", {})
         if kind in evidence:
@@ -240,9 +367,18 @@ def apply_extractor_results(
             raise ValueError(f"observation already has an {kind} failure for sample_id: {sample_id}")
         provenance = {
             "extractor": name.strip(),
-            "revision": revision.strip(),
+            "revision": revision,
+            "extractor_artifact_set_sha256": expected_extractor["artifact_set_sha256"],
             "input_audio_sha256": live_sha,
         }
+        if reference is not None:
+            provenance.update(
+                {
+                    "reference_id": reference["reference_id"],
+                    "reference_audio_sha256": reference["audio"]["sha256"],
+                    "reference_transcript_sha256": reference["transcript"]["sha256"],
+                }
+            )
         if status == "complete":
             values = result.get("values")
             required_fields = EXTRACTOR_FIELDS[kind]

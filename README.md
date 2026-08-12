@@ -18,6 +18,7 @@ The shared layer provides:
 - a frozen candidate by prompt by seed generation plan with completeness accounting;
 - plan-bound objective metric requirements that reject bilateral metric omission;
 - exact baseline-versus-adapted pairing with extractor-provenance checks and paired bootstrap intervals;
+- content-addressed extractor implementation or model artifacts plus speaker-reference audio and transcript bindings;
 - exact-versus-derived cross-runtime artifact manifests with live content rechecks;
 - lifecycle-stage and matched-comparison declarations for every supported adaptation path;
 - examples and unit tests for every contract.
@@ -303,10 +304,11 @@ silence, and clipping observations require versioned `audio_probe` evidence.
 These are objective proxies. They do not establish accent fidelity, cadence,
 naturalness, or listening fatigue.
 
-The scorer also reports every extractor and revision observed for ASR, speaker
-encoding, and runtime probes. It counts content-bound and unbound evidence for
-each extractor kind. Mixed provenance remains visible in an ordinary score
-report and is rejected by the matched-comparison command.
+The scorer also reports every extractor, revision, artifact-set digest, and
+speaker-reference identity observed for ASR, speaker encoding, and runtime
+probes. It counts fully content-bound and unbound evidence for each extractor
+kind. Mixed provenance remains visible in an ordinary score report and is
+rejected by the matched-comparison command.
 
 ## Bind extractor results to generated audio
 
@@ -331,19 +333,53 @@ instavar-voice-eval apply-extractor-results \
 The result document binds the complete source observation array and every
 result to SHA-256. Application rehashes each live WAV, rejects missing,
 unexpected, duplicate, stale, symlinked, empty, or overwriting results, and adds
-`input_audio_sha256` to extractor provenance. A failed extraction stays on its
-sample as explicit `extractor_failures` evidence rather than disappearing from
-coverage. The same version 1.0 result contract supports `asr` and
-`speaker_encoder` patches from external tools. Those tools can obtain the exact
-source binding with:
+`input_audio_sha256` and `extractor_artifact_set_sha256` to extractor
+provenance. A failed extraction stays on its sample as explicit
+`extractor_failures` evidence rather than disappearing from coverage. The same
+version 1.1 result contract supports `asr` and `speaker_encoder` patches from
+external tools. Those tools can obtain the exact source binding with:
 
 ```bash
 instavar-voice-eval fingerprint-observations generation-observations.json
 ```
 
-This protects source-to-metric identity on the observed host. It does not prove
-that an extractor is scientifically valid, robust to accent variation, or free
-from hostile-host tampering.
+External tools must also fingerprint the exact implementation or model files
+used for extraction. Speaker encoders additionally bind the exact reference WAV
+and transcript bytes:
+
+```bash
+instavar-voice-eval build-extractor-identity \
+  --kind speaker_encoder \
+  --name speaker-model \
+  --revision "$SPEAKER_EXTRACTOR_REVISION" \
+  --artifact model=tree=/models/speaker-model \
+  --output speaker-extractor-identity.json
+
+instavar-voice-eval build-speaker-reference \
+  --reference-id target-voice-1 \
+  --audio reference.wav \
+  --transcript reference.txt \
+  --output speaker-reference.json
+```
+
+The extractor producer places those two objects in the result document. The
+consumer then rechecks the same live paths while applying it:
+
+```bash
+instavar-voice-eval apply-extractor-results \
+  observations-with-audio-probes.json \
+  speaker-results.json \
+  --audio-base-dir evaluation \
+  --extractor-artifact model=tree=/models/speaker-model \
+  --reference-audio reference.wav \
+  --reference-transcript reference.txt \
+  --output observations-with-speaker-metrics.json
+```
+
+This protects source, extractor-artifact, and speaker-reference identity on the
+observed host. It does not prove that an extractor actually loaded the declared
+bytes, is scientifically valid, is robust to accent variation, or is free from
+hostile-host tampering.
 
 ## Compare a matched baseline and adapted candidate
 
