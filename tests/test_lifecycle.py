@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -52,6 +53,11 @@ class LifecycleTests(unittest.TestCase):
             self.assertIn("Model quality", report["evidence_boundary"])
             self.assertEqual(report["capability_binding"]["adaptation"], "lora")
             self.assertEqual(report["required_environment"], [])
+            self.assertEqual(
+                {record["role"] for record in report["control_inputs"]},
+                {"backend_spec", "capability_manifest", "experiment_manifest"},
+            )
+            self.assertTrue(all(len(record["sha256"]) == 64 for record in report["control_inputs"]))
 
     def test_rejects_nonempty_work_directory_instead_of_reusing_stale_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -77,6 +83,29 @@ class LifecycleTests(unittest.TestCase):
                     ROOT / "examples" / "experiment-manifest.json",
                     work_dir,
                 )
+
+    def test_rejects_symlinked_backend_and_experiment_control_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture_dir = Path(temporary)
+            linked_spec = fixture_dir / "backend.json"
+            linked_spec.symlink_to(ROOT / "examples" / "fake-backend.json")
+            with self.assertRaisesRegex(ValueError, "control input must not be a symlink"):
+                run_lifecycle(
+                    linked_spec,
+                    ROOT / "examples" / "experiment-manifest.json",
+                    fixture_dir / "spec-work",
+                )
+            self.assertFalse((fixture_dir / "spec-work").exists())
+
+            linked_experiment = fixture_dir / "experiment.json"
+            linked_experiment.symlink_to(ROOT / "examples" / "experiment-manifest.json")
+            with self.assertRaisesRegex(ValueError, "control input must not be a symlink"):
+                run_lifecycle(
+                    ROOT / "examples" / "fake-backend.json",
+                    linked_experiment,
+                    fixture_dir / "experiment-work",
+                )
+            self.assertFalse((fixture_dir / "experiment-work").exists())
 
     def test_rejects_semantically_invalid_experiment_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -332,6 +361,39 @@ class LifecycleTests(unittest.TestCase):
             report = json.loads((work_dir / "lifecycle-report.json").read_text())
             self.assertEqual(report["status"], "failed")
             self.assertIn("changed during", report["error"])
+
+    def test_lifecycle_fails_when_a_control_input_mutates_during_a_stage(self) -> None:
+        for role in ("backend_spec", "experiment_manifest", "capability_manifest"):
+            with self.subTest(role=role), tempfile.TemporaryDirectory() as temporary:
+                fixture_dir = Path(temporary)
+                spec = json.loads((ROOT / "examples" / "fake-backend.json").read_text())
+                spec_path = write_backend_fixture(fixture_dir, "backend.json", spec)
+                experiment_path = fixture_dir / "experiment.json"
+                experiment_path.write_text(
+                    (ROOT / "examples" / "experiment-manifest.json").read_text(),
+                    encoding="utf-8",
+                )
+                targets = {
+                    "backend_spec": spec_path,
+                    "experiment_manifest": experiment_path,
+                    "capability_manifest": fixture_dir / "capability-manifest.json",
+                }
+
+                def mutate_control_input(
+                    *_args: object,
+                    target: Path = targets[role],
+                    **_kwargs: object,
+                ) -> subprocess.CompletedProcess[str]:
+                    target.write_text(target.read_text() + "\n", encoding="utf-8")
+                    return subprocess.CompletedProcess(args=[], returncode=0)
+
+                work_dir = fixture_dir / "work"
+                with patch("instavar_voice_lab.lifecycle.subprocess.run", side_effect=mutate_control_input):
+                    result = run_lifecycle(spec_path, experiment_path, work_dir)
+                self.assertEqual(result["status"], "failed")
+                self.assertIn(f"after locking: {role}", result["stages"][0]["error"])
+                report = json.loads((work_dir / "lifecycle-report.json").read_text())
+                self.assertEqual(report["status"], "failed")
 
 
 if __name__ == "__main__":
