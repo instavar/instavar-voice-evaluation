@@ -17,6 +17,7 @@ The shared layer provides:
 - a fail-closed lifecycle runner for model-specific preflight, training, inference, evaluation, and packaging;
 - a frozen candidate by prompt by seed generation plan with completeness accounting;
 - plan-bound objective metric requirements that reject bilateral metric omission;
+- plan-bound lexical anchors with frozen ASR aliases and matched hit-rate deltas;
 - exact baseline-versus-adapted pairing with extractor-provenance checks and paired bootstrap intervals;
 - content-addressed extractor implementation or model artifacts plus speaker-reference audio and transcript bindings;
 - deterministic multi-reference speaker scoring with per-sample reference-set binding;
@@ -62,6 +63,15 @@ Matched comparison requires every valid pair to contain them. This prevents two
 candidates from omitting the same difficult metric and producing a superficially
 complete empty or timing-only comparison. Legacy plan 1.0 remains readable, but
 its report states that required metric coverage was not enforced.
+
+Prompt-pack version 1.2 can freeze optional lexical anchors on selected prompts.
+Each anchor declares a token-bound surface present in the requested text and a
+set of accepted ASR forms chosen before generation. The generation plan carries
+the exact anchor set across candidates and seeds. Empty forms, normalized
+duplicates, overlapping aliases, selective omission, and candidate-specific
+alias drift fail closed. A surface must occur exactly once, and alternate aliases
+must not already appear elsewhere in the prompt, so one unrelated phrase cannot
+satisfy the anchor automatically.
 
 ## Validate contracts
 
@@ -344,6 +354,18 @@ categories remain valid but report stratification as unavailable. Category
 strata can expose a localized proxy regression hidden by an overall mean. They
 do not define category weights, explain a difference, measure cadence from ASR,
 or replace criterion-specific blind listening.
+
+When the plan contains lexical anchors, scoring also emits
+`plan_lexical_anchor_evidence`. It reports phrase hits, misses, ASR-unavailable
+rows, invalid outputs, per-anchor coverage, and matched baseline-versus-adapted
+hit-rate deltas. Matching uses token phrases, so an anchor such as `he` does not
+match inside `the`. Accepted aliases are frozen in the plan and cannot be added
+after seeing a candidate's transcript. A hit means only that the configured ASR
+hypothesis contained one accepted phrase. It does not establish correct
+pronunciation, accent fidelity, naturalness, alignment to the intended word, or
+human acceptability. The plan digest makes later mutation visible but does not
+prove that the aliases were chosen before generation without an external commit
+or trusted timestamp.
 
 ## Bind runtime metrics to generation attempts
 

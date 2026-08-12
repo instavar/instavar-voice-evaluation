@@ -1,6 +1,6 @@
 {
   "id": "instavar-singapore-english",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "locale": "en-SG",
   "purpose": "Compare identity, Singapore English accent, pronunciation, cadence, long-form stability, and runtime behavior without treating conspicuous Singlish vocabulary as an accent proxy.",
   "reference_durations_seconds": [10, 30, 75],
@@ -19,6 +19,13 @@
     {
       "id": "local-context",
       "category": "natural_local_context",
+      "lexical_anchors": [
+        {
+          "anchor_id": "paiseh",
+          "surface": "paiseh",
+          "accepted_asr_forms": ["paiseh", "pai seh", "pie say"]
+        }
+      ],
       "text": "I thought the meeting was at the office, but Marcus said everyone was already heading to Tanjong Pagar. I felt a bit paiseh, so I sent a message and took the next train."
     },
     {
@@ -73,6 +80,7 @@
   ],
   "measurement_limits": [
     "ASR error rate does not measure accent fidelity.",
+    "A lexical-anchor ASR phrase hit does not establish correct pronunciation.",
     "Speaker embeddings do not measure cadence or long-form fatigue.",
     "Repository benchmarks do not replace a pinned local reproduction.",
     "No universal composite score is defined because the criteria measure different properties."

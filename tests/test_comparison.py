@@ -186,7 +186,36 @@ class MatchedComparisonTests(unittest.TestCase):
             {category["category"]: category["pair_count"] for category in strata["categories"]},
             {"long_form_cadence": 2, "pronunciation": 2},
         )
+        self.assertEqual(result["plan_lexical_anchor_evidence"]["mode"], "no_anchors")
         self.assertFalse(result["proves_adaptation_benefit"])
+
+    def test_compares_plan_bound_lexical_anchor_hits(self) -> None:
+        rows = [observation("base", "p1", 42), observation("adapter", "p1", 42)]
+        rows[0]["hypothesis_text"] = "goodbye world"
+        rows[1]["hypothesis_text"] = "hello world"
+        plan = generation_plan(rows)
+        for sample in plan["samples"]:
+            sample["lexical_anchors"] = [
+                {"anchor_id": "hello", "surface": "hello", "accepted_asr_forms": ["hello"]}
+            ]
+        result = compare_matched_candidates(
+            rows,
+            plan=plan,
+            baseline_candidate_id="base",
+            adapted_candidate_id="adapter",
+            seed=7,
+        )
+        evidence = result["plan_lexical_anchor_evidence"]
+        self.assertEqual(evidence["schema_version"], "1.0.0")
+        self.assertEqual(evidence["mode"], "generation_plan")
+        self.assertEqual(evidence["evaluable_matched_instance_count"], 1)
+        self.assertEqual(evidence["adapted_minus_baseline_hit_rate"], 1.0)
+        anchor = evidence["anchors"][0]
+        self.assertEqual(anchor["baseline_hit_rate"], 0.0)
+        self.assertEqual(anchor["adapted_hit_rate"], 1.0)
+        pair_anchor = result["pairs"][0]["lexical_anchors"][0]
+        self.assertEqual(pair_anchor["adapted_minus_baseline_hit"], 1)
+        self.assertIn("recognition evidence only", evidence["evidence_boundary"])
 
     def test_rejects_candidate_specific_plan_category_drift(self) -> None:
         rows = [observation("base", "p1", 42), observation("adapter", "p1", 42)]

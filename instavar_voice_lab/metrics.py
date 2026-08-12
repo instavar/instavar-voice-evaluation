@@ -19,10 +19,31 @@ from .speaker_references import (
 
 TOKEN_RE = re.compile(r"[\w']+", re.UNICODE)
 PLAN_CATEGORY_STRATIFICATION_VERSION = "1.0.0"
+PLAN_LEXICAL_ANCHOR_EVIDENCE_VERSION = "1.0.0"
 
 
 def _tokens(text: str) -> list[str]:
     return TOKEN_RE.findall(text.casefold())
+
+
+def _normalized_phrase(text: str) -> str:
+    return " ".join(_tokens(text))
+
+
+def _contains_token_phrase(text_tokens: list[str], phrase: str) -> bool:
+    phrase_tokens = _tokens(phrase)
+    return bool(phrase_tokens) and any(
+        text_tokens[index : index + len(phrase_tokens)] == phrase_tokens
+        for index in range(len(text_tokens) - len(phrase_tokens) + 1)
+    )
+
+
+def _token_phrase_occurrence_count(text_tokens: list[str], phrase: str) -> int:
+    phrase_tokens = _tokens(phrase)
+    return sum(
+        text_tokens[index : index + len(phrase_tokens)] == phrase_tokens
+        for index in range(len(text_tokens) - len(phrase_tokens) + 1)
+    ) if phrase_tokens else 0
 
 
 def _edit_distance(reference: list[str], hypothesis: list[str]) -> int:
@@ -242,6 +263,234 @@ def _plan_categories(rows: list[dict[str, Any]], generation_plan: Any | None) ->
     }
 
 
+def _normalized_lexical_anchors(raw: Any, *, context: str, text: Any) -> list[dict[str, Any]]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(f"{context} lexical_anchors must be a non-empty array when present")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError(f"{context} text must be non-empty when lexical anchors are present")
+    anchors: list[dict[str, Any]] = []
+    anchor_ids: set[str] = set()
+    accepted_forms: set[str] = set()
+    text_tokens = _tokens(text)
+    for index, raw_anchor in enumerate(raw):
+        anchor_context = f"{context} lexical_anchors[{index}]"
+        if not isinstance(raw_anchor, dict):
+            raise ValueError(f"{anchor_context} must be an object")
+        unexpected = sorted(set(raw_anchor) - {"anchor_id", "surface", "accepted_asr_forms"})
+        if unexpected:
+            raise ValueError(f"{anchor_context} contains unsupported fields: {', '.join(unexpected)}")
+        anchor_id = raw_anchor.get("anchor_id")
+        if not isinstance(anchor_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", anchor_id):
+            raise ValueError(f"{anchor_context} anchor_id has an invalid format")
+        if anchor_id in anchor_ids:
+            raise ValueError(f"{context} duplicates lexical anchor_id: {anchor_id}")
+        anchor_ids.add(anchor_id)
+        surface = raw_anchor.get("surface")
+        normalized_surface = _normalized_phrase(surface) if isinstance(surface, str) else ""
+        if not normalized_surface:
+            raise ValueError(f"{anchor_context} surface must contain at least one token")
+        if _token_phrase_occurrence_count(text_tokens, normalized_surface) != 1:
+            raise ValueError(f"{anchor_context} surface must occur exactly once as a token phrase in planned text")
+        raw_forms = raw_anchor.get("accepted_asr_forms")
+        if not isinstance(raw_forms, list) or not raw_forms:
+            raise ValueError(f"{anchor_context} accepted_asr_forms must be a non-empty array")
+        normalized_forms = [
+            _normalized_phrase(form) if isinstance(form, str) else ""
+            for form in raw_forms
+        ]
+        if any(not form for form in normalized_forms):
+            raise ValueError(f"{anchor_context} accepted_asr_forms must contain token-bearing strings")
+        if len(normalized_forms) != len(set(normalized_forms)):
+            raise ValueError(f"{anchor_context} accepted_asr_forms must be unique after normalization")
+        if normalized_surface not in normalized_forms:
+            raise ValueError(f"{anchor_context} accepted_asr_forms must include the normalized surface")
+        colliding_aliases = sorted(
+            form
+            for form in set(normalized_forms)
+            if form != normalized_surface and _token_phrase_occurrence_count(text_tokens, form)
+        )
+        if colliding_aliases:
+            raise ValueError(
+                f"{anchor_context} alternate ASR forms must not already occur in planned text: "
+                + ", ".join(colliding_aliases)
+            )
+        overlap = sorted(set(normalized_forms) & accepted_forms)
+        if overlap:
+            raise ValueError(
+                f"{anchor_context} accepted_asr_forms overlaps another anchor after normalization: "
+                + ", ".join(overlap)
+            )
+        accepted_forms.update(normalized_forms)
+        anchors.append(
+            {
+                "anchor_id": anchor_id,
+                "surface": normalized_surface,
+                "accepted_asr_forms": sorted(normalized_forms),
+            }
+        )
+    return sorted(anchors, key=lambda anchor: anchor["anchor_id"])
+
+
+def _plan_lexical_anchors(rows: list[dict[str, Any]], generation_plan: Any | None) -> dict[str, Any]:
+    if generation_plan is None:
+        return {
+            "schema_version": PLAN_LEXICAL_ANCHOR_EVIDENCE_VERSION,
+            "mode": "unavailable",
+            "generation_plan_sha256": None,
+            "planned_anchor_instance_count": None,
+            "selected_anchor_instance_count": 0,
+            "anchor_bearing_sample_count": 0,
+            "anchors": {},
+            "evidence_boundary": "Lexical-anchor evidence requires a live generation plan.",
+        }
+    if not isinstance(generation_plan, dict) or generation_plan.get("schema_version") not in {"1.0.0", "1.1.0"}:
+        raise ValueError("lexical-anchor generation plan must be a version 1.0.0 or 1.1.0 object")
+    raw_samples = generation_plan.get("samples")
+    if not isinstance(raw_samples, list) or not raw_samples:
+        raise ValueError("lexical-anchor generation plan must contain samples")
+    planned_by_id: dict[str, dict[str, Any]] = {}
+    anchors_by_prompt: dict[str, set[str]] = defaultdict(set)
+    normalized_by_sample: dict[str, list[dict[str, Any]]] = {}
+    planned_anchor_count = 0
+    for index, planned in enumerate(raw_samples):
+        if not isinstance(planned, dict) or not isinstance(planned.get("sample_id"), str):
+            raise ValueError(f"lexical-anchor generation plan sample {index} must declare sample_id")
+        sample_id = planned["sample_id"]
+        if sample_id in planned_by_id:
+            raise ValueError(f"lexical-anchor generation plan duplicates sample_id: {sample_id}")
+        anchors = _normalized_lexical_anchors(
+            planned.get("lexical_anchors"),
+            context=f"lexical-anchor generation plan sample {index}",
+            text=planned.get("text"),
+        )
+        prompt_id = planned.get("prompt_id")
+        if isinstance(prompt_id, str):
+            anchors_by_prompt[prompt_id].add(canonical_sha256(anchors))
+        planned_anchor_count += len(anchors)
+        normalized_by_sample[sample_id] = anchors
+        planned_by_id[sample_id] = planned
+    for prompt_id, anchor_digests in sorted(anchors_by_prompt.items()):
+        if len(anchor_digests) > 1:
+            raise ValueError(
+                f"lexical-anchor generation plan prompt {prompt_id} must use one anchor set across samples"
+            )
+
+    selected: dict[str, list[dict[str, Any]]] = {}
+    for index, row in enumerate(rows):
+        planned = planned_by_id.get(row.get("sample_id"))
+        if planned is None:
+            raise ValueError(f"observation {index} is absent from the lexical-anchor generation plan")
+        mismatches = [
+            observation_field
+            for observation_field, plan_field in (
+                ("candidate_id", "candidate_id"),
+                ("prompt_id", "prompt_id"),
+                ("seed", "seed"),
+                ("requested_text", "text"),
+            )
+            if row.get(observation_field) != planned.get(plan_field)
+        ]
+        if mismatches:
+            raise ValueError(
+                f"observation {row.get('sample_id')} does not match lexical-anchor generation plan fields: "
+                + ", ".join(mismatches)
+            )
+        anchors = normalized_by_sample[planned["sample_id"]]
+        if anchors:
+            selected[str(row["sample_id"])] = anchors
+    selected_anchor_count = sum(len(anchors) for anchors in selected.values())
+    return {
+        "schema_version": PLAN_LEXICAL_ANCHOR_EVIDENCE_VERSION,
+        "mode": "generation_plan" if selected else "no_anchors",
+        "generation_plan_sha256": canonical_sha256(generation_plan),
+        "planned_anchor_instance_count": planned_anchor_count,
+        "selected_anchor_instance_count": selected_anchor_count,
+        "anchor_bearing_sample_count": len(selected),
+        "anchors": selected,
+        "evidence_boundary": (
+            "Accepted ASR forms are frozen in the generation plan. A phrase hit is recognition evidence only and "
+            "does not establish pronunciation, accent fidelity, naturalness, human acceptability, or that the plan "
+            "existed before generation without external chronology evidence."
+        ),
+    }
+
+
+def _lexical_anchor_diagnostics(
+    anchors: list[dict[str, Any]],
+    *,
+    valid: bool,
+    hypothesis: str | None,
+) -> list[dict[str, Any]]:
+    hypothesis_tokens = _tokens(hypothesis) if isinstance(hypothesis, str) else []
+    results: list[dict[str, Any]] = []
+    for anchor in anchors:
+        if not valid:
+            status = "invalid_output"
+            matched_form = None
+        elif hypothesis is None:
+            status = "asr_unavailable"
+            matched_form = None
+        else:
+            matched_form = next(
+                (
+                    form
+                    for form in anchor["accepted_asr_forms"]
+                    if _contains_token_phrase(hypothesis_tokens, form)
+                ),
+                None,
+            )
+            status = "hit" if matched_form is not None else "miss"
+        results.append(
+            {
+                "anchor_id": anchor["anchor_id"],
+                "surface": anchor["surface"],
+                "accepted_asr_forms": list(anchor["accepted_asr_forms"]),
+                "status": status,
+                "hit": True if status == "hit" else False if status == "miss" else None,
+                "matched_asr_form": matched_form,
+            }
+        )
+    return results
+
+
+def _lexical_anchor_summary(samples: list[dict[str, Any]], plan_anchors: dict[str, Any]) -> dict[str, Any]:
+    public_binding = {key: value for key, value in plan_anchors.items() if key != "anchors"}
+    if not plan_anchors["anchors"]:
+        return {**public_binding, "candidates": []}
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for sample in samples:
+        for result in sample["diagnostics"].get("lexical_anchors", []):
+            grouped[(sample["candidate_id"], sample["prompt_id"], result["anchor_id"])].append(result)
+    by_candidate: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for (candidate_id, prompt_id, anchor_id), results in sorted(grouped.items()):
+        evaluable = [result for result in results if result["status"] in {"hit", "miss"}]
+        hit_count = sum(result["status"] == "hit" for result in evaluable)
+        by_candidate[candidate_id].append(
+            {
+                "anchor_id": anchor_id,
+                "prompt_id": prompt_id,
+                "surface": results[0]["surface"],
+                "planned_instance_count": len(results),
+                "evaluable_instance_count": len(evaluable),
+                "hit_count": hit_count,
+                "hit_rate": hit_count / len(evaluable) if evaluable else None,
+                "status_counts": {
+                    status: sum(result["status"] == status for result in results)
+                    for status in ("hit", "miss", "asr_unavailable", "invalid_output")
+                },
+            }
+        )
+    return {
+        **public_binding,
+        "candidates": [
+            {"candidate_id": candidate_id, "anchors": anchors}
+            for candidate_id, anchors in sorted(by_candidate.items())
+        ],
+    }
+
+
 def _category_strata(samples: list[dict[str, Any]], plan_categories: dict[str, Any], *, seed: int) -> dict[str, Any]:
     public_binding = {key: value for key, value in plan_categories.items() if key != "categories"}
     if not plan_categories["categories"]:
@@ -318,6 +567,7 @@ def score_objective_observations(
         raise ValueError("; ".join(contract_errors))
     asr_reference_text = _asr_reference_text_provenance(rows, generation_plan)
     plan_categories = _plan_categories(rows, generation_plan)
+    plan_anchors = _plan_lexical_anchors(rows, generation_plan)
 
     required = {"sample_id", "candidate_id", "prompt_id", "requested_text", "valid"}
     seen: set[str] = set()
@@ -481,6 +731,13 @@ def score_objective_observations(
                 candidate["word_error_rate"].append(value)
             else:
                 sample_result["excluded_quality_metrics"].append("asr_word_error_rate")
+        sample_anchors = plan_anchors["anchors"].get(sample_id, [])
+        if sample_anchors:
+            sample_result["diagnostics"]["lexical_anchors"] = _lexical_anchor_diagnostics(
+                sample_anchors,
+                valid=row["valid"],
+                hypothesis=hypothesis,
+            )
 
         reference_embedding = row.get("reference_speaker_embedding")
         reference_embeddings = row.get("reference_speaker_embeddings")
@@ -683,6 +940,7 @@ def score_objective_observations(
         "bootstrap_seed": seed,
         "metric_provenance": metric_provenance,
         "plan_category_stratification": _category_strata(per_sample, plan_categories, seed=seed + 100000),
+        "plan_lexical_anchor_evidence": _lexical_anchor_summary(per_sample, plan_anchors),
         "candidates": candidates,
         "samples": per_sample,
     }

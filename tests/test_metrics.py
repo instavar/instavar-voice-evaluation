@@ -205,6 +205,171 @@ class MetricTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must use one category"):
             score_objective_observations([row], generation_plan=selective_omission)
 
+    def test_reports_plan_bound_lexical_anchor_hits_and_coverage(self) -> None:
+        rows = []
+        samples = []
+        fixtures = (
+            (42, True, "I felt pie say today", "hit"),
+            (43, True, "I felt pleased today", "miss"),
+            (44, True, None, "asr_unavailable"),
+            (45, False, None, "invalid_output"),
+        )
+        anchors = [
+            {
+                "anchor_id": "paiseh",
+                "surface": "paiseh",
+                "accepted_asr_forms": ["paiseh", "pai seh", "pie say"],
+            }
+        ]
+        for seed, valid, hypothesis, expected_status in fixtures:
+            sample_id = f"adapter--local-context--seed-{seed}"
+            row = {
+                "sample_id": sample_id,
+                "candidate_id": "adapter",
+                "prompt_id": "local-context",
+                "seed": seed,
+                "requested_text": "I felt paiseh today",
+                "valid": valid,
+            }
+            if hypothesis is not None:
+                row["hypothesis_text"] = hypothesis
+                row["evidence"] = {"asr": {"extractor": "test-asr", "revision": "1"}}
+            rows.append(row)
+            samples.append(
+                {
+                    "sample_id": sample_id,
+                    "candidate_id": "adapter",
+                    "prompt_id": "local-context",
+                    "category": "natural_local_context",
+                    "seed": seed,
+                    "text": row["requested_text"],
+                    "lexical_anchors": deepcopy(anchors),
+                }
+            )
+        plan = {"schema_version": "1.0.0", "samples": samples}
+        result = score_objective_observations(rows, generation_plan=plan)
+        evidence = result["plan_lexical_anchor_evidence"]
+        self.assertEqual(evidence["schema_version"], "1.0.0")
+        self.assertEqual(evidence["mode"], "generation_plan")
+        self.assertEqual(evidence["generation_plan_sha256"], canonical_sha256(plan))
+        self.assertEqual(evidence["planned_anchor_instance_count"], 4)
+        anchor = evidence["candidates"][0]["anchors"][0]
+        self.assertEqual(anchor["evaluable_instance_count"], 2)
+        self.assertEqual(anchor["hit_count"], 1)
+        self.assertEqual(anchor["hit_rate"], 0.5)
+        statuses = [
+            sample["diagnostics"]["lexical_anchors"][0]["status"]
+            for sample in result["samples"]
+        ]
+        self.assertEqual(statuses, [fixture[3] for fixture in fixtures])
+        self.assertIn("recognition evidence only", evidence["evidence_boundary"])
+
+    def test_lexical_anchor_matching_uses_token_boundaries(self) -> None:
+        row = {
+            "sample_id": "adapter--p1--seed-42",
+            "candidate_id": "adapter",
+            "prompt_id": "p1",
+            "seed": 42,
+            "requested_text": "He will go",
+            "hypothesis_text": "The will go",
+            "valid": True,
+            "evidence": {"asr": {"extractor": "test-asr", "revision": "1"}},
+        }
+        plan = {
+            "schema_version": "1.0.0",
+            "samples": [
+                {
+                    "sample_id": row["sample_id"],
+                    "candidate_id": row["candidate_id"],
+                    "prompt_id": row["prompt_id"],
+                    "category": "pronunciation",
+                    "seed": row["seed"],
+                    "text": row["requested_text"],
+                    "lexical_anchors": [
+                        {"anchor_id": "he", "surface": "He", "accepted_asr_forms": ["he"]}
+                    ],
+                }
+            ],
+        }
+        result = score_objective_observations([row], generation_plan=plan)
+        anchor = result["samples"][0]["diagnostics"]["lexical_anchors"][0]
+        self.assertEqual(anchor["status"], "miss")
+
+    def test_lexical_anchors_reject_candidate_specific_alias_drift(self) -> None:
+        rows = [
+            {
+                "sample_id": f"{candidate}--p1--seed-42",
+                "candidate_id": candidate,
+                "prompt_id": "p1",
+                "seed": 42,
+                "requested_text": "I felt paiseh",
+                "valid": True,
+            }
+            for candidate in ("base", "adapter")
+        ]
+        samples = [
+            {
+                "sample_id": row["sample_id"],
+                "candidate_id": row["candidate_id"],
+                "prompt_id": row["prompt_id"],
+                "category": "pronunciation",
+                "seed": row["seed"],
+                "text": row["requested_text"],
+                "lexical_anchors": [
+                    {
+                        "anchor_id": "paiseh",
+                        "surface": "paiseh",
+                        "accepted_asr_forms": (
+                            ["paiseh", "pie say"] if row["candidate_id"] == "base" else ["paiseh"]
+                        ),
+                    }
+                ],
+            }
+            for row in rows
+        ]
+        with self.assertRaisesRegex(ValueError, "must use one anchor set"):
+            score_objective_observations(
+                rows,
+                generation_plan={"schema_version": "1.0.0", "samples": samples},
+            )
+
+    def test_lexical_anchors_reject_repeated_surface_and_prompt_colliding_alias(self) -> None:
+        row = {
+            "sample_id": "adapter--p1--seed-42",
+            "candidate_id": "adapter",
+            "prompt_id": "p1",
+            "seed": 42,
+            "requested_text": "I felt paiseh and remained paiseh near Tanjong Pagar",
+            "valid": True,
+        }
+        sample = {
+            "sample_id": row["sample_id"],
+            "candidate_id": row["candidate_id"],
+            "prompt_id": row["prompt_id"],
+            "category": "pronunciation",
+            "seed": row["seed"],
+            "text": row["requested_text"],
+            "lexical_anchors": [
+                {
+                    "anchor_id": "paiseh",
+                    "surface": "paiseh",
+                    "accepted_asr_forms": ["paiseh", "tanjong pagar"],
+                }
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "surface must occur exactly once"):
+            score_objective_observations(
+                [row],
+                generation_plan={"schema_version": "1.0.0", "samples": [sample]},
+            )
+        sample["text"] = "I felt paiseh near Tanjong Pagar"
+        row["requested_text"] = sample["text"]
+        with self.assertRaisesRegex(ValueError, "must not already occur"):
+            score_objective_observations(
+                [row],
+                generation_plan={"schema_version": "1.0.0", "samples": [sample]},
+            )
+
     def test_rejects_asr_reference_text_drift_from_generation_plan(self) -> None:
         row = {
             "sample_id": "adapter--p1--seed-42",

@@ -9,7 +9,12 @@ from statistics import mean, median
 from typing import Any
 
 from .attempts import runtime_attempt_is_content_bound
-from .metrics import PLAN_CATEGORY_STRATIFICATION_VERSION, bootstrap_mean_interval, score_objective_observations
+from .metrics import (
+    PLAN_CATEGORY_STRATIFICATION_VERSION,
+    PLAN_LEXICAL_ANCHOR_EVIDENCE_VERSION,
+    bootstrap_mean_interval,
+    score_objective_observations,
+)
 from .runtime_artifacts import exact_runtime_binding, verify_runtime_artifact_manifest
 from .speaker_reference_plans import (
     speaker_reference_assignment_sha256,
@@ -158,6 +163,73 @@ def _category_comparison(pair_rows: list[dict[str, Any]], *, seed: int) -> dict[
         "evidence_boundary": (
             "Category deltas expose heterogeneous objective proxies. They do not establish perceptual quality, "
             "causality, or a universal category weighting."
+        ),
+    }
+
+
+def _lexical_anchor_comparison(
+    pair_rows: list[dict[str, Any]],
+    *,
+    seed: int,
+    generation_plan_sha256: str,
+) -> dict[str, Any]:
+    anchor_rows = [
+        {**anchor, "prompt_id": pair["prompt_id"], "seed": pair["seed"]}
+        for pair in pair_rows
+        for anchor in pair.get("lexical_anchors", [])
+    ]
+    if not anchor_rows:
+        return {
+            "schema_version": PLAN_LEXICAL_ANCHOR_EVIDENCE_VERSION,
+            "mode": "no_anchors",
+            "generation_plan_sha256": generation_plan_sha256,
+            "planned_matched_instance_count": 0,
+            "evaluable_matched_instance_count": 0,
+            "anchors": [],
+            "evidence_boundary": "Matched lexical-anchor evidence requires frozen anchors and ASR hypotheses.",
+        }
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in anchor_rows:
+        grouped[(row["prompt_id"], row["anchor_id"])].append(row)
+    summaries: list[dict[str, Any]] = []
+    all_deltas: list[float] = []
+    for anchor_index, ((prompt_id, anchor_id), rows) in enumerate(sorted(grouped.items())):
+        evaluable = [
+            row
+            for row in rows
+            if row["baseline_hit"] is not None and row["adapted_hit"] is not None
+        ]
+        deltas = [float(row["adapted_hit"]) - float(row["baseline_hit"]) for row in evaluable]
+        all_deltas.extend(deltas)
+        baseline_hits = sum(row["baseline_hit"] is True for row in evaluable)
+        adapted_hits = sum(row["adapted_hit"] is True for row in evaluable)
+        summaries.append(
+            {
+                "anchor_id": anchor_id,
+                "prompt_id": prompt_id,
+                "surface": rows[0]["surface"],
+                "planned_matched_instance_count": len(rows),
+                "evaluable_matched_instance_count": len(evaluable),
+                "baseline_hit_rate": baseline_hits / len(evaluable) if evaluable else None,
+                "adapted_hit_rate": adapted_hits / len(evaluable) if evaluable else None,
+                "adapted_minus_baseline_hit_rate": mean(deltas) if deltas else None,
+                "mean_delta_95pct_bootstrap_ci": bootstrap_mean_interval(
+                    deltas,
+                    seed=seed + anchor_index,
+                ),
+            }
+        )
+    return {
+        "schema_version": PLAN_LEXICAL_ANCHOR_EVIDENCE_VERSION,
+        "mode": "generation_plan",
+        "generation_plan_sha256": generation_plan_sha256,
+        "planned_matched_instance_count": len(anchor_rows),
+        "evaluable_matched_instance_count": len(all_deltas),
+        "adapted_minus_baseline_hit_rate": mean(all_deltas) if all_deltas else None,
+        "anchors": summaries,
+        "evidence_boundary": (
+            "Matched ASR phrase-hit deltas are recognition evidence only. They do not establish pronunciation, "
+            "accent fidelity, naturalness, or human acceptability."
         ),
     }
 
@@ -625,6 +697,47 @@ def compare_matched_candidates(
                 "adapted_minus_baseline": delta,
             }
             paired_deltas[metric].append(delta)
+        baseline_anchor_results = {
+            result["anchor_id"]: result
+            for result in scored_by_id[str(baseline_row["sample_id"])]["diagnostics"].get(
+                "lexical_anchors", []
+            )
+        }
+        adapted_anchor_results = {
+            result["anchor_id"]: result
+            for result in scored_by_id[str(adapted_row["sample_id"])]["diagnostics"].get(
+                "lexical_anchors", []
+            )
+        }
+        if set(baseline_anchor_results) != set(adapted_anchor_results):
+            raise ValueError(f"generation plan lexical-anchor mismatch for prompt {key[0]}, seed {key[1]}")
+        lexical_anchors: list[dict[str, Any]] = []
+        for anchor_id in sorted(baseline_anchor_results):
+            baseline_anchor = baseline_anchor_results[anchor_id]
+            adapted_anchor = adapted_anchor_results[anchor_id]
+            for field in ("surface", "accepted_asr_forms"):
+                if baseline_anchor[field] != adapted_anchor[field]:
+                    raise ValueError(
+                        f"generation plan lexical-anchor {field} mismatch for prompt {key[0]}, seed {key[1]}"
+                    )
+            baseline_hit = baseline_anchor["hit"]
+            adapted_hit = adapted_anchor["hit"]
+            lexical_anchors.append(
+                {
+                    "anchor_id": anchor_id,
+                    "surface": baseline_anchor["surface"],
+                    "accepted_asr_forms": list(baseline_anchor["accepted_asr_forms"]),
+                    "baseline_status": baseline_anchor["status"],
+                    "adapted_status": adapted_anchor["status"],
+                    "baseline_hit": baseline_hit,
+                    "adapted_hit": adapted_hit,
+                    "adapted_minus_baseline_hit": (
+                        int(adapted_hit) - int(baseline_hit)
+                        if baseline_hit is not None and adapted_hit is not None
+                        else None
+                    ),
+                }
+            )
         pair_result = {
             "prompt_id": key[0],
             "seed": key[1],
@@ -636,6 +749,8 @@ def compare_matched_candidates(
             "speaker_reference_assignment_sha256": speaker_reference_assignment_sha256_value,
             "metrics": metrics,
         }
+        if lexical_anchors:
+            pair_result["lexical_anchors"] = lexical_anchors
         if isinstance(baseline_category, str):
             pair_result["category"] = baseline_category.strip()
         pair_rows.append(pair_result)
@@ -699,6 +814,11 @@ def compare_matched_candidates(
         "metric_provenance": provenance,
         "metrics": metric_rows,
         "plan_category_stratification": _category_comparison(pair_rows, seed=seed + 100000),
+        "plan_lexical_anchor_evidence": _lexical_anchor_comparison(
+            pair_rows,
+            seed=seed + 200000,
+            generation_plan_sha256=plan_binding["sha256"],
+        ),
         "pairs": pair_rows,
         "proves_adaptation_benefit": False,
         "evidence_boundary": (
