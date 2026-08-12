@@ -11,7 +11,7 @@ from typing import Any
 
 from .metrics import bootstrap_mean_interval
 
-LISTENING_ASSIGNMENT_PLAN_SCHEMA_VERSION = "1.0.0"
+LISTENING_ASSIGNMENT_PLAN_SCHEMA_VERSION = "1.1.0"
 LISTENING_ROUTING_SCHEMA_VERSION = "1.0.0"
 _ROUTING_SELECTORS = {"all_samples", "categories", "categories_or_lexical_anchors", "lexical_anchors"}
 
@@ -65,6 +65,45 @@ def _normalized_routing(routing: Any) -> list[dict[str, Any]]:
     return routes
 
 
+def _review_stimulus(raw: dict[str, Any], *, index: int) -> dict[str, Any]:
+    text = raw.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError(f"generation plan sample {index} text must be a non-empty string")
+    stimulus: dict[str, Any] = {"text": text}
+    instruction = raw.get("instruction")
+    if instruction is not None:
+        if not isinstance(instruction, str) or not instruction.strip():
+            raise ValueError(f"generation plan sample {index} instruction must be a non-empty string when present")
+        stimulus["instruction"] = instruction
+    anchors = raw.get("lexical_anchors")
+    if anchors is not None:
+        if not isinstance(anchors, list) or not anchors:
+            raise ValueError(f"generation plan sample {index} lexical_anchors must be a non-empty array when present")
+        targets: list[dict[str, str]] = []
+        seen_ids: set[str] = set()
+        for anchor_index, anchor in enumerate(anchors):
+            if not isinstance(anchor, dict):
+                raise ValueError(
+                    f"generation plan sample {index} lexical anchor {anchor_index} must be an object"
+                )
+            anchor_id = anchor.get("anchor_id")
+            surface = anchor.get("surface")
+            if not isinstance(anchor_id, str) or not anchor_id.strip():
+                raise ValueError(
+                    f"generation plan sample {index} lexical anchor {anchor_index} anchor_id must be non-empty"
+                )
+            if not isinstance(surface, str) or not surface.strip():
+                raise ValueError(
+                    f"generation plan sample {index} lexical anchor {anchor_index} surface must be non-empty"
+                )
+            if anchor_id in seen_ids:
+                raise ValueError(f"generation plan sample {index} lexical anchor ids must be unique")
+            seen_ids.add(anchor_id)
+            targets.append({"anchor_id": anchor_id, "surface": surface})
+        stimulus["lexical_targets"] = targets
+    return stimulus
+
+
 def _generation_rows(generation_plan: Any) -> list[dict[str, Any]]:
     if not isinstance(generation_plan, dict) or generation_plan.get("schema_version") not in {"1.0.0", "1.1.0"}:
         raise ValueError("generation plan schema_version must equal 1.0.0 or 1.1.0")
@@ -74,7 +113,7 @@ def _generation_rows(generation_plan: Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     candidate_keys: dict[str, set[tuple[str, int]]] = defaultdict(set)
-    prompt_shapes: dict[str, tuple[str, str]] = {}
+    prompt_shapes: dict[str, tuple[str, str, str]] = {}
     for index, raw in enumerate(raw_samples):
         if not isinstance(raw, dict):
             raise ValueError(f"generation plan sample {index} must be an object")
@@ -101,11 +140,14 @@ def _generation_rows(generation_plan: Any) -> list[dict[str, Any]]:
                 f"generation plan repeats prompt and seed for candidate {candidate_id}: {prompt_id}/{seed}"
             )
         candidate_keys[candidate_id].add(key)
-        shape = (category, _digest(raw.get("lexical_anchors")))
+        stimulus = _review_stimulus(raw, index=index)
+        shape = (category, _digest(stimulus), _digest(raw.get("lexical_anchors")))
         if prompt_id in prompt_shapes and prompt_shapes[prompt_id] != shape:
-            raise ValueError(f"generation plan route-relevant fields drift across candidates or seeds: {prompt_id}")
+            raise ValueError(f"generation plan listening-relevant fields drift across candidates or seeds: {prompt_id}")
         prompt_shapes[prompt_id] = shape
-        rows.append(dict(raw))
+        row = dict(raw)
+        row["_review_stimulus"] = stimulus
+        rows.append(row)
     key_sets = list(candidate_keys.values())
     if any(keys != key_sets[0] for keys in key_sets[1:]):
         raise ValueError("generation plan candidates must cover the same prompt and seed keys for listening routing")
@@ -144,6 +186,7 @@ def _assignment_payload(generation_plan: dict[str, Any], routing: dict[str, Any]
                 "prompt_id": row["prompt_id"],
                 "seed": row["seed"],
                 "criteria": assigned,
+                "stimulus": row["_review_stimulus"],
             }
         )
     candidate_ids = sorted({str(row["candidate_id"]) for row in rows})
@@ -261,6 +304,7 @@ def build_blind_pack(
         }
         if assignment_plan is not None:
             blind_row["criteria"] = criteria_by_sample[str(sample["sample_id"])]
+            blind_row["stimulus"] = planned[str(sample["sample_id"])]["stimulus"]
         blind_rows.append(blind_row)
         reveal_row = {
             "blind_id": blind_id,
@@ -284,6 +328,10 @@ def build_blind_pack(
     }
     if assignment_binding is not None:
         review["assignment_plan"] = assignment_binding
+        review["stimulus_boundary"] = (
+            "Stimuli reproduce generation-plan text, instructions, and lexical target surfaces. Accepted ASR forms "
+            "are intentionally excluded, and a target surface does not prescribe its correct pronunciation."
+        )
         review["instructions"] = (
             "Rate only the criteria assigned to each sample, one criterion at a time. Review only the blind_audio "
             "paths and do not open the reveal mapping until every assigned rating is recorded."

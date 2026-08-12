@@ -259,12 +259,16 @@ instavar-voice-eval build-listening-assignment-plan evaluation/generation-plan.j
   --output evaluation/listening-assignment-plan.json
 ```
 
-The builder rejects unmatched criteria, category or lexical-anchor drift across
-candidates or seeds, candidate-asymmetric coverage, duplicate samples, and any
-sample left without a criterion. The output binds the routing and assignments
-to the exact generation-plan hash and includes a self-hash. Hashes make later
-mutation detectable, but do not prove that preregistration happened before
-generation without external server-stamped chronology.
+The builder rejects unmatched criteria, candidate-specific or seed-specific
+text, instruction, category, or lexical-anchor drift, candidate-asymmetric
+coverage, duplicate samples, and any sample left without a criterion. The
+output binds the routing, assignments, exact requested text, optional
+instruction, and reviewer-visible lexical target surfaces to the exact
+generation-plan hash and includes a self-hash. Accepted ASR forms are excluded
+from reviewer stimuli because recognition tolerances are not pronunciation
+guidance. Hashes make later mutation detectable, but do not prove that
+preregistration happened before generation without external server-stamped
+chronology.
 
 Prepare a JSON array containing `sample_id`, `candidate_id`, `prompt_id`,
 `seed`, and `audio_path` for every planned sample. Then run:
@@ -280,9 +284,12 @@ instavar-voice-eval build-listening-pack samples.json \
 ```
 
 The review file contains no candidate identifiers or source filenames. Each
-blind sample lists only its assigned criteria, so a complete ratings matrix no
-longer requires meaningless pronunciation scores for prompts without a target
-or cadence scores for short clips. The aggregator rejects ratings for criteria
+blind sample lists its generation-plan-bound stimulus and assigned criteria, so
+a reviewer can judge exact wording and instruction obedience without consulting
+an uncontrolled external prompt file. A visible lexical target does not
+prescribe its correct pronunciation. A complete ratings matrix no longer
+requires meaningless pronunciation scores for prompts without a target or
+cadence scores for short clips. The aggregator rejects ratings for criteria
 that were not assigned to that sample. With
 `--stage-root`, audio is copied to paths such as
 `blind_audio/sample-0001.wav`, and a hash manifest is written beside the staged

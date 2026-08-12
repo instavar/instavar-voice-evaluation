@@ -34,6 +34,8 @@ class ListeningPackTests(unittest.TestCase):
                     "seed": 42,
                     "text": f"Text for {prompt_id}",
                 }
+                if prompt_id == "long":
+                    row["instruction"] = "Read steadily."
                 if has_anchor:
                     row["lexical_anchors"] = [
                         {"anchor_id": "paiseh", "surface": "paiseh", "accepted_asr_forms": ["paiseh"]}
@@ -103,6 +105,15 @@ class ListeningPackTests(unittest.TestCase):
         self.assertEqual(by_prompt["brief"], ["identity"])
         self.assertEqual(by_prompt["local"], ["identity", "lexical_pronunciation"])
         self.assertEqual(by_prompt["long"], ["identity", "cadence"])
+        long_form = next(row for row in first["assignments"] if row["prompt_id"] == "long")
+        self.assertEqual(long_form["stimulus"]["instruction"], "Read steadily.")
+        local = next(row for row in first["assignments"] if row["prompt_id"] == "local")
+        self.assertEqual(local["stimulus"]["text"], "Text for local")
+        self.assertEqual(
+            local["stimulus"]["lexical_targets"],
+            [{"anchor_id": "paiseh", "surface": "paiseh"}],
+        )
+        self.assertNotIn("accepted_asr_forms", str(local["stimulus"]))
 
     def test_plan_bound_pack_requires_only_assigned_ratings(self) -> None:
         generation_plan = self.generation_plan()
@@ -125,6 +136,9 @@ class ListeningPackTests(unittest.TestCase):
             generation_plan=generation_plan,
         )
         self.assertEqual(review["assignment_plan"]["assignment_plan_sha256"], assignment_plan["assignment_plan_sha256"])
+        local_review = next(row for row in review["samples"] if row["prompt_id"] == "local")
+        self.assertEqual(local_review["stimulus"]["text"], "Text for local")
+        self.assertNotIn("accepted_asr_forms", str(local_review))
         ratings = {
             "scale": {"min": 1, "max": 5},
             "expected_rater_ids": ["rater"],
@@ -165,6 +179,27 @@ class ListeningPackTests(unittest.TestCase):
         drifted["samples"][3]["category"] = "different_for_adapter"
         with self.assertRaisesRegex(ValueError, "drift across candidates"):
             build_listening_assignment_plan(drifted, self.routing())
+
+        text_drift = self.generation_plan()
+        text_drift["samples"][3]["text"] = "Candidate-specific wording"
+        with self.assertRaisesRegex(ValueError, "drift across candidates"):
+            build_listening_assignment_plan(text_drift, self.routing())
+
+    def test_assignment_plan_rejects_missing_or_malformed_review_stimuli(self) -> None:
+        missing_text = self.generation_plan()
+        del missing_text["samples"][0]["text"]
+        with self.assertRaisesRegex(ValueError, "text must be a non-empty string"):
+            build_listening_assignment_plan(missing_text, self.routing())
+
+        empty_instruction = self.generation_plan()
+        empty_instruction["samples"][0]["instruction"] = " "
+        with self.assertRaisesRegex(ValueError, "instruction must be a non-empty string"):
+            build_listening_assignment_plan(empty_instruction, self.routing())
+
+        malformed_anchor = self.generation_plan()
+        malformed_anchor["samples"][1]["lexical_anchors"] = [{"anchor_id": "paiseh"}]
+        with self.assertRaisesRegex(ValueError, "surface must be non-empty"):
+            build_listening_assignment_plan(malformed_anchor, self.routing())
 
     def test_plan_bound_pack_rejects_sample_identity_drift(self) -> None:
         generation_plan = self.generation_plan()
@@ -245,7 +280,7 @@ class ListeningPackTests(unittest.TestCase):
                 0,
             )
             review = json.loads(review_path.read_text(encoding="utf-8"))
-            self.assertTrue(all("criteria" in row for row in review["samples"]))
+            self.assertTrue(all({"criteria", "stimulus"} <= row.keys() for row in review["samples"]))
 
     def test_rejects_incomplete_rating_matrix_by_default(self) -> None:
         samples = [
