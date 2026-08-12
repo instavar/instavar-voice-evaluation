@@ -46,11 +46,33 @@ class ListeningPackTests(unittest.TestCase):
     @staticmethod
     def routing() -> dict:
         return {
-            "schema_version": "1.0.0",
+            "schema_version": "1.1.0",
             "routes": [
-                {"criterion": "identity", "selector": "all_samples"},
-                {"criterion": "lexical_pronunciation", "selector": "lexical_anchors"},
-                {"criterion": "cadence", "selector": "categories", "categories": ["long_form"]},
+                {
+                    "criterion": "identity",
+                    "selector": "all_samples",
+                    "direction": "higher_is_better",
+                    "review_prompt": "How close is identity?",
+                    "low_label": "No match",
+                    "high_label": "Strong match",
+                },
+                {
+                    "criterion": "lexical_pronunciation",
+                    "selector": "lexical_anchors",
+                    "direction": "higher_is_better",
+                    "review_prompt": "How accurate is pronunciation?",
+                    "low_label": "Wrong",
+                    "high_label": "Accurate",
+                },
+                {
+                    "criterion": "cadence",
+                    "selector": "categories",
+                    "categories": ["long_form"],
+                    "direction": "lower_is_better",
+                    "review_prompt": "How monotonous is cadence?",
+                    "low_label": "No monotony",
+                    "high_label": "Severe monotony",
+                },
             ],
         }
 
@@ -94,6 +116,10 @@ class ListeningPackTests(unittest.TestCase):
         self.assertIsNotNone(result["agreement"]["speaker_identity"]["krippendorff_alpha_interval"])
         self.assertEqual(result["coverage"]["status"], "complete")
         self.assertEqual(result["coverage"]["assignment_mode"], "all_criteria_per_sample")
+        self.assertEqual(
+            result["criterion_definitions"],
+            [{"criterion": "speaker_identity", "direction": "unspecified"}],
+        )
 
     def test_builds_plan_bound_criterion_assignments(self) -> None:
         generation_plan = self.generation_plan()
@@ -114,6 +140,9 @@ class ListeningPackTests(unittest.TestCase):
             [{"anchor_id": "paiseh", "surface": "paiseh"}],
         )
         self.assertNotIn("accepted_asr_forms", str(local["stimulus"]))
+        definitions = {row["criterion"]: row for row in first["criterion_definitions"]}
+        self.assertEqual(definitions["identity"]["direction"], "higher_is_better")
+        self.assertEqual(definitions["cadence"]["direction"], "lower_is_better")
 
     def test_plan_bound_pack_requires_only_assigned_ratings(self) -> None:
         generation_plan = self.generation_plan()
@@ -156,6 +185,10 @@ class ListeningPackTests(unittest.TestCase):
         result = aggregate_listening_results(review, reveal, ratings)
         self.assertEqual(result["coverage"]["assignment_mode"], "plan_bound")
         self.assertEqual(result["coverage"]["expected_rating_count"], 10)
+        definitions = {row["criterion"]: row for row in result["criterion_definitions"]}
+        self.assertEqual(definitions["identity"]["direction"], "higher_is_better")
+        self.assertEqual(definitions["cadence"]["direction"], "lower_is_better")
+        self.assertNotIn("composite_score", result)
         brief = next(row for row in review["samples"] if row["prompt_id"] == "brief")
         ratings["ratings"].append(
             {"rater_id": "rater", "blind_id": brief["blind_id"], "criterion": "cadence", "score": 3}
@@ -200,6 +233,22 @@ class ListeningPackTests(unittest.TestCase):
         malformed_anchor["samples"][1]["lexical_anchors"] = [{"anchor_id": "paiseh"}]
         with self.assertRaisesRegex(ValueError, "surface must be non-empty"):
             build_listening_assignment_plan(malformed_anchor, self.routing())
+
+        missing_direction = self.routing()
+        del missing_direction["routes"][0]["direction"]
+        with self.assertRaisesRegex(ValueError, "direction must be one of"):
+            build_listening_assignment_plan(self.generation_plan(), missing_direction)
+
+        invalid_direction = self.routing()
+        invalid_direction["routes"][0]["direction"] = "larger_number_is_vaguer"
+        with self.assertRaisesRegex(ValueError, "direction must be one of"):
+            build_listening_assignment_plan(self.generation_plan(), invalid_direction)
+
+        for field in ("review_prompt", "low_label", "high_label"):
+            malformed = self.routing()
+            malformed["routes"][0][field] = " "
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, f"{field} must be a non-empty string"):
+                build_listening_assignment_plan(self.generation_plan(), malformed)
 
     def test_plan_bound_pack_rejects_sample_identity_drift(self) -> None:
         generation_plan = self.generation_plan()

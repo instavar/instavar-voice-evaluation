@@ -11,9 +11,10 @@ from typing import Any
 
 from .metrics import bootstrap_mean_interval
 
-LISTENING_ASSIGNMENT_PLAN_SCHEMA_VERSION = "1.1.0"
-LISTENING_ROUTING_SCHEMA_VERSION = "1.0.0"
+LISTENING_ASSIGNMENT_PLAN_SCHEMA_VERSION = "1.2.0"
+LISTENING_ROUTING_SCHEMA_VERSION = "1.1.0"
 _ROUTING_SELECTORS = {"all_samples", "categories", "categories_or_lexical_anchors", "lexical_anchors"}
+_CRITERION_DIRECTIONS = {"higher_is_better", "lower_is_better"}
 
 
 def _digest(value: Any) -> str:
@@ -44,7 +45,18 @@ def _normalized_routing(routing: Any) -> list[dict[str, Any]]:
             raise ValueError(
                 f"listening routing route {criterion} selector must be one of: {', '.join(sorted(_ROUTING_SELECTORS))}"
             )
-        normalized = {"criterion": criterion, "selector": selector}
+        direction = raw.get("direction")
+        if direction not in _CRITERION_DIRECTIONS:
+            raise ValueError(
+                f"listening routing route {criterion} direction must be one of: "
+                f"{', '.join(sorted(_CRITERION_DIRECTIONS))}"
+            )
+        normalized = {"criterion": criterion, "selector": selector, "direction": direction}
+        for field in ("review_prompt", "low_label", "high_label"):
+            value = raw.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"listening routing route {criterion} {field} must be a non-empty string")
+            normalized[field] = value.strip()
         categories = raw.get("categories")
         if selector in {"categories", "categories_or_lexical_anchors"}:
             if (
@@ -202,10 +214,18 @@ def _assignment_payload(generation_plan: dict[str, Any], routing: dict[str, Any]
         if any(targets != target_sets[candidate_ids[0]] for targets in target_sets.values()):
             raise ValueError(f"listening routing criterion is candidate-asymmetric: {criterion}")
     normalized_routing = {"schema_version": LISTENING_ROUTING_SCHEMA_VERSION, "routes": routes}
+    criterion_definitions = [
+        {
+            field: route[field]
+            for field in ("criterion", "direction", "review_prompt", "low_label", "high_label")
+        }
+        for route in routes
+    ]
     return {
         "schema_version": LISTENING_ASSIGNMENT_PLAN_SCHEMA_VERSION,
         "generation_plan_sha256": _digest(generation_plan),
         "criteria": [route["criterion"] for route in routes],
+        "criterion_definitions": criterion_definitions,
         "routing": normalized_routing,
         "assignments": assignments,
         "evidence_boundary": (
@@ -328,6 +348,7 @@ def build_blind_pack(
     }
     if assignment_binding is not None:
         review["assignment_plan"] = assignment_binding
+        review["criterion_definitions"] = assignment_plan["criterion_definitions"]
         review["stimulus_boundary"] = (
             "Stimuli reproduce generation-plan text, instructions, and lexical target surfaces. Accepted ASR forms "
             "are intentionally excluded, and a target surface does not prescribe its correct pronunciation."
@@ -453,6 +474,28 @@ def aggregate_listening_results(
         or len(set(criteria)) != len(criteria)
     ):
         raise ValueError("review document has no criteria")
+    raw_definitions = review.get("criterion_definitions")
+    if raw_definitions is None:
+        criterion_definitions = {
+            criterion: {"criterion": criterion, "direction": "unspecified"} for criterion in criteria
+        }
+    else:
+        if not isinstance(raw_definitions, list) or len(raw_definitions) != len(criteria):
+            raise ValueError("review criterion_definitions must cover every criterion exactly once")
+        criterion_definitions = {}
+        for index, definition in enumerate(raw_definitions):
+            if not isinstance(definition, dict):
+                raise ValueError(f"review criterion definition {index} must be an object")
+            criterion = definition.get("criterion")
+            direction = definition.get("direction")
+            if criterion not in criteria or criterion in criterion_definitions:
+                raise ValueError(f"review criterion definition {index} has an unknown or duplicate criterion")
+            if direction not in _CRITERION_DIRECTIONS:
+                raise ValueError(f"review criterion definition {index} has an invalid direction")
+            for field in ("review_prompt", "low_label", "high_label"):
+                if not isinstance(definition.get(field), str) or not definition[field].strip():
+                    raise ValueError(f"review criterion definition {index} has an invalid {field}")
+            criterion_definitions[criterion] = dict(definition)
     scale = ratings_document.get("scale")
     ratings = ratings_document.get("ratings")
     if not isinstance(scale, dict) or not isinstance(ratings, list):
@@ -594,6 +637,7 @@ def aggregate_listening_results(
         "schema_version": "1.0.0",
         "revealed": True,
         "rating_scale": {"min": minimum, "max": maximum},
+        "criterion_definitions": [criterion_definitions[criterion] for criterion in criteria],
         "rater_count": len(rater_ids),
         "expected_rater_count": len(expected_rater_ids),
         "rating_count": len(ratings),
@@ -613,6 +657,7 @@ def aggregate_listening_results(
         "agreement": agreement,
         "evidence_boundary": (
             "Agreement measures rating consistency, not truth. Criterion summaries remain separate and do not "
-            "prove general quality."
+            "prove general quality. Direction metadata prevents inverted interpretation but does not justify "
+            "combining distinct criteria into a composite."
         ),
     }

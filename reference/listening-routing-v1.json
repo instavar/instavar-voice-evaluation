@@ -1,9 +1,13 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "routes": [
     {
       "criterion": "speaker_identity",
-      "selector": "all_samples"
+      "selector": "all_samples",
+      "direction": "higher_is_better",
+      "review_prompt": "How closely does this sound like the target speaker?",
+      "low_label": "Not recognizable as the target speaker",
+      "high_label": "Strong match to the target speaker"
     },
     {
       "criterion": "singapore_english_accent_fidelity",
@@ -12,14 +16,22 @@
         "neutral_singapore_english",
         "natural_local_context",
         "pronunciation"
-      ]
+      ],
+      "direction": "higher_is_better",
+      "review_prompt": "How faithfully does this preserve the target speaker's ordinary Singapore English accent?",
+      "low_label": "Accent does not match the target",
+      "high_label": "Accent closely matches the target"
     },
     {
       "criterion": "lexical_pronunciation",
       "selector": "categories_or_lexical_anchors",
       "categories": [
         "pronunciation"
-      ]
+      ],
+      "direction": "higher_is_better",
+      "review_prompt": "How accurate and natural is the pronunciation of the requested words and visible lexical targets?",
+      "low_label": "Pronunciation is clearly wrong or unnatural",
+      "high_label": "Pronunciation is accurate and natural"
     },
     {
       "criterion": "cadence_variation",
@@ -27,7 +39,11 @@
       "categories": [
         "long_form_cadence",
         "long_form_structure"
-      ]
+      ],
+      "direction": "higher_is_better",
+      "review_prompt": "How naturally does cadence vary with sentence structure and meaning?",
+      "low_label": "Cadence is rigid or repetitive",
+      "high_label": "Cadence varies naturally"
     },
     {
       "criterion": "long_form_monotony",
@@ -35,22 +51,38 @@
       "categories": [
         "long_form_cadence",
         "long_form_structure"
-      ]
+      ],
+      "direction": "lower_is_better",
+      "review_prompt": "How monotonous does the voice become over the full passage?",
+      "low_label": "No sustained monotony",
+      "high_label": "Severe sustained monotony"
     },
     {
       "criterion": "naturalness",
-      "selector": "all_samples"
+      "selector": "all_samples",
+      "direction": "higher_is_better",
+      "review_prompt": "How natural does the speech sound overall?",
+      "low_label": "Clearly synthetic or awkward",
+      "high_label": "Natural human-like speech"
     },
     {
       "criterion": "emotion_and_instruction_obedience",
       "selector": "categories",
       "categories": [
         "emotion_control"
-      ]
+      ],
+      "direction": "higher_is_better",
+      "review_prompt": "How well does the delivery follow the visible emotion or style instruction?",
+      "low_label": "Does not follow the instruction",
+      "high_label": "Closely follows the instruction"
     },
     {
       "criterion": "artifact_severity",
-      "selector": "all_samples"
+      "selector": "all_samples",
+      "direction": "lower_is_better",
+      "review_prompt": "How severe are audible synthesis artifacts?",
+      "low_label": "No audible artifacts",
+      "high_label": "Severe audible artifacts"
     },
     {
       "criterion": "listening_fatigue",
@@ -58,7 +90,11 @@
       "categories": [
         "long_form_cadence",
         "long_form_structure"
-      ]
+      ],
+      "direction": "lower_is_better",
+      "review_prompt": "How fatiguing is it to listen to the full passage?",
+      "low_label": "Not fatiguing",
+      "high_label": "Severely fatiguing"
     }
   ]
 }

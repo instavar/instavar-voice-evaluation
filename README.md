@@ -270,6 +270,14 @@ guidance. Hashes make later mutation detectable, but do not prove that
 preregistration happened before generation without external server-stamped
 chronology.
 
+Every routed criterion also declares a reviewer question, low and high scale
+anchors, and an explicit `higher_is_better` or `lower_is_better` direction.
+This matters because a high naturalness score is favorable while a high
+artifact-severity, monotony, or listening-fatigue score is unfavorable. The
+same definitions are copied into the blind review and aggregate result. Raw
+scores are not silently inverted, and distinct criteria are never collapsed
+into an unvalidated composite.
+
 Prepare a JSON array containing `sample_id`, `candidate_id`, `prompt_id`,
 `seed`, and `audio_path` for every planned sample. Then run:
 
@@ -319,6 +327,8 @@ Krippendorff alpha where multiple raters overlap. It fails on an incomplete
 rater by sample by criterion matrix by default. Use `--allow-incomplete` only
 when an explicitly incomplete coverage report is the intended artifact.
 Agreement measures rating consistency, not correctness or perceptual truth.
+Legacy all-criteria review files remain readable, but their aggregate marks
+criterion direction as `unspecified` because no anchored semantics were bound.
 
 ## Score objective observations
 
