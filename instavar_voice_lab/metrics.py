@@ -6,6 +6,8 @@ import re
 from statistics import mean, median
 from typing import Any, Iterable
 
+from .observations import validate_objective_observations
+
 
 TOKEN_RE = re.compile(r"[\w']+", re.UNICODE)
 
@@ -99,8 +101,9 @@ def _metric_summary(values: list[float], *, seed: int) -> dict[str, Any] | None:
 
 
 def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 20260812) -> dict[str, Any]:
-    if not rows:
-        raise ValueError("at least one objective observation is required")
+    contract_errors = validate_objective_observations(rows)
+    if contract_errors:
+        raise ValueError("; ".join(contract_errors))
 
     required = {"sample_id", "candidate_id", "prompt_id", "requested_text", "valid"}
     seen: set[str] = set()
@@ -244,8 +247,39 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
                     values["audio_duration_seconds"], seed=candidate_seed + 5
                 ),
                 "peak_memory_bytes": _metric_summary(values["peak_memory_bytes"], seed=candidate_seed + 6),
+                "metric_coverage": {
+                    "asr_word_error_rate": {
+                        "observed": len(values["word_error_rate"]),
+                        "eligible": valid,
+                    },
+                    "speaker_embedding_similarity": {
+                        "observed": len(values["speaker_embedding_similarity"]),
+                        "eligible": valid,
+                    },
+                    "real_time_factor": {
+                        "observed": len(values["real_time_factor"]),
+                        "eligible": valid,
+                    },
+                    "generation_seconds": {
+                        "observed": len(values["generation_seconds"]),
+                        "eligible": total,
+                    },
+                    "audio_duration_seconds": {
+                        "observed": len(values["audio_duration_seconds"]),
+                        "eligible": valid,
+                    },
+                    "peak_memory_bytes": {
+                        "observed": len(values["peak_memory_bytes"]),
+                        "eligible": total,
+                    },
+                },
             }
         )
+
+    for candidate in candidates:
+        for coverage in candidate["metric_coverage"].values():
+            eligible = int(coverage["eligible"])
+            coverage["rate"] = coverage["observed"] / eligible if eligible else None
 
     return {
         "schema_version": "1.0.0",
@@ -255,6 +289,15 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
             "They are excluded from ASR, speaker, audio-duration, and real-time-factor quality summaries."
         ),
         "proves_perceptual_quality": False,
+        "observation_contract": {
+            "version": "1.0.0",
+            "versioned_sample_count": sum(
+                row.get("observation_schema_version") == "1.0.0" for row in rows
+            ),
+            "unversioned_sample_count": sum(
+                "observation_schema_version" not in row for row in rows
+            ),
+        },
         "bootstrap_seed": seed,
         "metric_provenance": {
             kind: {

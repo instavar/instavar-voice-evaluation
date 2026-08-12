@@ -1,8 +1,11 @@
 [
   {
+    "observation_schema_version": "1.0.0",
     "sample_id": "baseline-p001",
     "candidate_id": "base-model",
     "prompt_id": "p001",
+    "seed": 42,
+    "runtime_id": "pytorch",
     "requested_text": "Please send the revised schedule by Friday afternoon.",
     "hypothesis_text": "Please send the revised schedule by Friday afternoon.",
     "valid": true,
@@ -18,9 +21,12 @@
     }
   },
   {
+    "observation_schema_version": "1.0.0",
     "sample_id": "adapter-p001",
     "candidate_id": "selected-adapter",
     "prompt_id": "p001",
+    "seed": 42,
+    "runtime_id": "pytorch",
     "requested_text": "Please send the revised schedule by Friday afternoon.",
     "hypothesis_text": "Please send the revised schedule by Friday afternoon.",
     "valid": true,

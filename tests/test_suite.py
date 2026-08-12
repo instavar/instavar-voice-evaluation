@@ -32,6 +32,8 @@ class SuiteTests(unittest.TestCase):
                 "sample_id": row["sample_id"],
                 "candidate_id": row["candidate_id"],
                 "prompt_id": row["prompt_id"],
+                "seed": row["seed"],
+                "requested_text": row["text"],
                 "valid": row["prompt_id"] != "local-context",
             }
             for row in plan["samples"]
@@ -53,6 +55,28 @@ class SuiteTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(len(result["missing_sample_ids"]), 1)
         self.assertEqual(len(result["duplicate_sample_ids"]), 1)
+
+    def test_coverage_rejects_sample_id_with_spoofed_plan_fields(self) -> None:
+        plan = build_generation_plan(self.prompt_pack(), ["adapter"], seeds=[42])
+        observations = [
+            {
+                "sample_id": row["sample_id"],
+                "candidate_id": row["candidate_id"],
+                "prompt_id": row["prompt_id"],
+                "seed": row["seed"],
+                "requested_text": row["text"],
+                "valid": True,
+            }
+            for row in plan["samples"]
+        ]
+        observations[0]["requested_text"] = "different text"
+        observations[0]["seed"] = 314159
+        result = check_suite_coverage(plan, observations)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(
+            result["mismatched_observations"],
+            [{"sample_id": observations[0]["sample_id"], "fields": ["requested_text", "seed"]}],
+        )
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ from .lifecycle import (
 from .lineage import build_dataset_lineage, validate_dataset_lineage, verify_dataset_lineage
 from .listening import aggregate_listening_results, build_blind_pack, stage_blind_audio
 from .metrics import score_objective_observations
+from .observations import validate_objective_observations
 from .runtime_artifacts import (
     build_runtime_artifact_manifest,
     validate_runtime_artifact_manifest,
@@ -159,6 +160,15 @@ def build_parser() -> argparse.ArgumentParser:
     objective.add_argument("observations", type=Path)
     objective.add_argument("--output", type=Path, required=True)
     objective.add_argument("--seed", type=int, default=20260812)
+
+    observation_contract = commands.add_parser(
+        "validate-observations",
+        help="validate objective observation rows before scoring or comparison",
+    )
+    observation_contract.add_argument("observations", type=Path)
+    observation_contract.add_argument("--require-version", action="store_true")
+    observation_contract.add_argument("--require-seed", action="store_true")
+    observation_contract.add_argument("--require-runtime", action="store_true")
 
     listening = commands.add_parser(
         "aggregate-listening",
@@ -398,6 +408,23 @@ def main(argv: list[str] | None = None) -> int:
             print(error, file=sys.stderr)
             return 2
         _write_json(args.output, result)
+        return 0
+    if args.command == "validate-observations":
+        try:
+            errors = validate_objective_observations(
+                _read_json(args.observations),
+                require_version=args.require_version,
+                require_seed=args.require_seed,
+                require_runtime=args.require_runtime,
+            )
+        except (OSError, json.JSONDecodeError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        if errors:
+            for error in errors:
+                print(error, file=sys.stderr)
+            return 1
+        print(f"valid objective observations: {args.observations}")
         return 0
     if args.command == "aggregate-listening":
         try:

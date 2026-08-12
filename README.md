@@ -12,6 +12,7 @@ The shared layer provides:
 - deterministic PCM WAV diagnostics;
 - deterministic blind-review labels, identity-neutral staged filenames, and a separately stored reveal mapping;
 - objective proxy scoring from versioned ASR, speaker-encoder, and runtime observations;
+- a versioned objective-observation contract with stable identifiers and complete runtime-artifact bindings;
 - criterion-level listening aggregation with bootstrap intervals and interval agreement; and
 - a fail-closed lifecycle runner for model-specific preflight, training, inference, evaluation, and packaging;
 - a frozen candidate by prompt by seed generation plan with completeness accounting;
@@ -44,8 +45,10 @@ instavar-voice-eval check-suite-coverage \
 ```
 
 Coverage passes when every planned sample has exactly one observation, including
-failed generations recorded with `valid: false`. It does not convert signal,
-ASR, speaker, or runtime measurements into a perceptual quality claim.
+failed generations recorded with `valid: false`. Coverage also verifies that
+candidate, prompt, seed, and requested text match the plan instead of trusting a
+matching sample ID alone. It does not convert signal, ASR, speaker, or runtime
+measurements into a perceptual quality claim.
 
 ## Validate contracts
 
@@ -259,6 +262,24 @@ Agreement measures rating consistency, not correctness or perceptual truth.
 
 ## Score objective observations
 
+New runners should emit `observation_schema_version: "1.0.0"`, a non-negative
+`seed`, and a stable `runtime_id` on every row. Validate the strict producer
+contract before scoring:
+
+```bash
+instavar-voice-eval validate-observations examples/objective-observations.json \
+  --require-version \
+  --require-seed \
+  --require-runtime
+```
+
+Artifact-set ID and SHA-256 fields are optional for single-runtime scoring, but
+they must appear together. Runtime comparisons require them through the
+stronger exact-artifact binding gate. The Python scorer still accepts legacy
+unversioned rows so historical evidence can be inspected, and reports how many
+rows were versioned rather than silently treating them as current-contract
+evidence.
+
 The core package does not bundle a preferred ASR model or speaker encoder. Instead, each sample records the extractor name and revision that produced its transcript, speaker embedding, runtime, and memory observations. Score those versioned observations with:
 
 ```bash
@@ -267,7 +288,11 @@ instavar-voice-eval score-objective examples/objective-observations.json \
   --seed 20260812
 ```
 
-The result reports ASR word error rate, speaker-embedding cosine similarity, invalid-output rate, real-time factor, generation time, audio duration, and peak memory independently. These are objective proxies. They do not establish accent fidelity, cadence, naturalness, or listening fatigue.
+The result reports ASR word error rate, speaker-embedding cosine similarity,
+invalid-output rate, real-time factor, generation time, audio duration, and peak
+memory independently. Per-candidate metric coverage makes selective omission
+visible. These are objective proxies. They do not establish accent fidelity,
+cadence, naturalness, or listening fatigue.
 
 The scorer also reports every extractor and revision observed for ASR, speaker
 encoding, and runtime probes. Mixed provenance remains visible in an ordinary
@@ -291,7 +316,8 @@ instavar-voice-eval compare-matched objective-observations.json \
 The command binds every observation to the frozen generation plan and fails if
 either candidate is missing a planned sample, an unplanned sample is added, a
 prompt or seed differs, the requested transcripts differ, a pair is duplicated,
-or ASR, speaker, or runtime extractor provenance is mixed. Invalid generations
+ASR, speaker, or runtime extractor provenance is mixed, or a valid candidate
+selectively omits metrics available for its matched peer. Invalid generations
 remain in the validity delta but cannot improve WER, speaker similarity,
 audio-duration, or real-time-factor summaries. Metric deltas use exact pairs
 and keep directionality explicit, but the report sets

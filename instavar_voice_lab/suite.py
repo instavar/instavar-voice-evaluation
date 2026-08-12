@@ -199,6 +199,26 @@ def check_suite_coverage(plan: Any, observations: Any) -> dict[str, Any]:
         for sample_id, rows in observed_rows.items()
         if sample_id in expected and len(rows) == 1 and rows[0].get("valid") is not True
     )
+    mismatched: list[dict[str, Any]] = []
+    for sample_id, rows in sorted(observed_rows.items()):
+        if sample_id not in expected or len(rows) != 1:
+            continue
+        planned = expected[sample_id]
+        observed = rows[0]
+        mismatched_fields = [
+            observed_name
+            for observed_name, planned_name in (
+                ("candidate_id", "candidate_id"),
+                ("prompt_id", "prompt_id"),
+                ("seed", "seed"),
+                ("requested_text", "text"),
+            )
+            if observed.get(observed_name) != planned.get(planned_name)
+        ]
+        if not isinstance(observed.get("valid"), bool):
+            mismatched_fields.append("valid")
+        if mismatched_fields:
+            mismatched.append({"sample_id": sample_id, "fields": sorted(mismatched_fields)})
 
     by_candidate: dict[str, dict[str, Any]] = {}
     for candidate_id in plan.get("candidate_ids", []):
@@ -225,7 +245,13 @@ def check_suite_coverage(plan: Any, observations: Any) -> dict[str, Any]:
             "invalid": sum(sample_id in invalid for sample_id in category_ids),
         }
 
-    coverage_complete = not missing and not unexpected and not duplicates and malformed_count == 0
+    coverage_complete = (
+        not missing
+        and not unexpected
+        and not duplicates
+        and not mismatched
+        and malformed_count == 0
+    )
     return {
         "schema_version": "1.0.0",
         "status": "passed" if coverage_complete else "failed",
@@ -236,6 +262,7 @@ def check_suite_coverage(plan: Any, observations: Any) -> dict[str, Any]:
         "missing_sample_ids": missing,
         "unexpected_sample_ids": unexpected,
         "duplicate_sample_ids": duplicates,
+        "mismatched_observations": mismatched,
         "invalid_sample_ids": invalid,
         "malformed_observation_count": malformed_count,
         "by_candidate": by_candidate,

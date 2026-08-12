@@ -224,6 +224,14 @@ def compare_matched_candidates(
         adapted_invalid += not adapted_valid
         baseline_metrics = scored_by_id[str(baseline_row["sample_id"])]["metrics"]
         adapted_metrics = scored_by_id[str(adapted_row["sample_id"])]["metrics"]
+        if baseline_valid and adapted_valid and set(baseline_metrics) != set(adapted_metrics):
+            missing_adapted = sorted(set(baseline_metrics) - set(adapted_metrics))
+            missing_baseline = sorted(set(adapted_metrics) - set(baseline_metrics))
+            raise ValueError(
+                "matched comparison requires symmetric metric availability for valid pairs; "
+                f"prompt={key[0]}; seed={key[1]}; missing adapted={missing_adapted}; "
+                f"missing baseline={missing_baseline}"
+            )
         metrics: dict[str, dict[str, float]] = {}
         for metric in sorted(set(baseline_metrics) & set(adapted_metrics)):
             baseline_value = float(baseline_metrics[metric])
@@ -296,7 +304,8 @@ def compare_matched_candidates(
         "pairs": pair_rows,
         "proves_adaptation_benefit": False,
         "evidence_boundary": (
-            "A passed matched comparison proves exact prompt and seed pairing plus consistent extractor provenance. "
+            "A passed matched comparison proves exact prompt and seed pairing, symmetric metric availability for "
+            "valid pairs, and consistent extractor provenance. "
             "Objective deltas remain proxies and do not establish speaker identity, accent fidelity, cadence, naturalness, or preference."
         ),
     }

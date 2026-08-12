@@ -111,6 +111,21 @@ class MatchedComparisonTests(unittest.TestCase):
                 adapted_candidate_id="adapter",
             )
 
+    def test_rejects_selective_metric_omission_from_valid_pair(self) -> None:
+        rows = [observation("base", "p1", 42), observation("adapter", "p1", 42)]
+        del rows[1]["hypothesis_text"]
+        del rows[1]["reference_speaker_embedding"]
+        del rows[1]["speaker_embedding"]
+        del rows[1]["evidence"]["asr"]
+        del rows[1]["evidence"]["speaker_encoder"]
+        with self.assertRaisesRegex(ValueError, "symmetric metric availability"):
+            compare_matched_candidates(
+                rows,
+                plan=generation_plan(rows),
+                baseline_candidate_id="base",
+                adapted_candidate_id="adapter",
+            )
+
     def test_preserves_invalid_pair_in_validity_delta(self) -> None:
         rows = [observation("base", "p1", 42), observation("adapter", "p1", 42, valid=False)]
         result = compare_matched_candidates(

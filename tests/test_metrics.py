@@ -50,6 +50,8 @@ class MetricTests(unittest.TestCase):
         self.assertEqual(candidate["asr_word_error_rate"]["mean"], 0.0)
         self.assertEqual(candidate["speaker_embedding_similarity"]["mean"], 1.0)
         self.assertEqual(candidate["real_time_factor"]["mean"], 0.5)
+        self.assertEqual(candidate["metric_coverage"]["asr_word_error_rate"]["rate"], 1.0)
+        self.assertEqual(candidate["metric_coverage"]["generation_seconds"]["rate"], 0.5)
         self.assertNotIn("composite_score", result)
         self.assertFalse(result["proves_perceptual_quality"])
 
@@ -111,6 +113,18 @@ class MetricTests(unittest.TestCase):
         invalid = next(sample for sample in result["samples"] if sample["sample_id"] == "invalid")
         self.assertIn("asr_word_error_rate", invalid["excluded_quality_metrics"])
         self.assertEqual(invalid["diagnostics"]["invalid_audio_duration_seconds"], 0.04)
+
+    def test_rejects_partial_artifact_binding(self) -> None:
+        row = {
+            "sample_id": "sample-1",
+            "candidate_id": "adapter",
+            "prompt_id": "p1",
+            "requested_text": "hello",
+            "valid": True,
+            "artifact_set_id": "voice-1",
+        }
+        with self.assertRaisesRegex(ValueError, "must be supplied together"):
+            score_objective_observations([row])
 
 
 if __name__ == "__main__":
