@@ -5,7 +5,7 @@
   "type": "object",
   "required": ["schema_version", "source_observations_sha256", "extractor", "results"],
   "properties": {
-    "schema_version": { "enum": ["1.1.0", "1.2.0", "1.3.0", "1.4.0"] },
+    "schema_version": { "enum": ["1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0"] },
     "source_observations_sha256": { "$ref": "#/$defs/sha256" },
     "extractor": {
       "type": "object",
@@ -59,26 +59,10 @@
     "reference_aggregation": { "const": "mean_cosine_similarity_v1" },
     "reference_assignment_plan_sha256": { "$ref": "#/$defs/sha256" },
     "execution": {
-      "type": "object",
-      "required": ["backend", "device", "trusted_model_checkpoints", "python_version", "platform", "package_versions"],
-      "properties": {
-        "backend": { "const": "instavar_voice_lab.speechbrain_ecapa_v1" },
-        "device": { "type": "string", "pattern": "^(cpu|cuda(:[0-9]+)?)$" },
-        "trusted_model_checkpoints": { "const": true },
-        "python_version": { "type": "string", "minLength": 1 },
-        "platform": { "type": "string", "minLength": 1 },
-        "package_versions": {
-          "type": "object",
-          "required": ["speechbrain", "torch", "torchaudio"],
-          "properties": {
-            "speechbrain": { "type": "string", "minLength": 1 },
-            "torch": { "type": "string", "minLength": 1 },
-            "torchaudio": { "type": "string", "minLength": 1 }
-          },
-          "additionalProperties": false
-        }
-      },
-      "additionalProperties": false
+      "oneOf": [
+        { "$ref": "#/$defs/speechbrainExecution" },
+        { "$ref": "#/$defs/fasterWhisperExecution" }
+      ]
     },
     "execution_receipt_sha256": { "$ref": "#/$defs/sha256" },
     "results": {
@@ -202,17 +186,11 @@
     },
     {
       "if": {
-        "properties": { "schema_version": { "const": "1.4.0" } },
+        "properties": { "schema_version": { "enum": ["1.4.0", "1.5.0"] } },
         "required": ["schema_version"]
       },
       "then": {
-        "required": ["execution", "execution_receipt_sha256"],
-        "properties": {
-          "extractor": {
-            "properties": { "kind": { "const": "speaker_encoder" } },
-            "required": ["kind"]
-          }
-        }
+        "required": ["execution", "execution_receipt_sha256"]
       },
       "else": {
         "not": {
@@ -222,10 +200,132 @@
           ]
         }
       }
+    },
+    {
+      "if": {
+        "properties": { "schema_version": { "const": "1.4.0" } },
+        "required": ["schema_version"]
+      },
+      "then": {
+        "properties": {
+          "extractor": {
+            "properties": { "kind": { "const": "speaker_encoder" } },
+            "required": ["kind"]
+          },
+          "execution": { "$ref": "#/$defs/speechbrainExecution" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "schema_version": { "const": "1.5.0" } },
+        "required": ["schema_version"]
+      },
+      "then": {
+        "properties": {
+          "extractor": {
+            "properties": { "kind": { "const": "asr" } },
+            "required": ["kind"]
+          },
+          "execution": { "$ref": "#/$defs/fasterWhisperExecution" }
+        }
+      }
     }
   ],
   "additionalProperties": false,
   "$defs": {
+    "speechbrainExecution": {
+      "type": "object",
+      "required": ["backend", "device", "trusted_model_checkpoints", "python_version", "platform", "package_versions"],
+      "properties": {
+        "backend": { "const": "instavar_voice_lab.speechbrain_ecapa_v1" },
+        "device": { "type": "string", "pattern": "^(cpu|cuda(:[0-9]+)?)$" },
+        "trusted_model_checkpoints": { "const": true },
+        "python_version": { "type": "string", "minLength": 1 },
+        "platform": { "type": "string", "minLength": 1 },
+        "package_versions": {
+          "type": "object",
+          "required": ["speechbrain", "torch", "torchaudio"],
+          "properties": {
+            "speechbrain": { "type": "string", "minLength": 1 },
+            "torch": { "type": "string", "minLength": 1 },
+            "torchaudio": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "fasterWhisperExecution": {
+      "type": "object",
+      "required": [
+        "backend",
+        "device",
+        "device_index",
+        "compute_type",
+        "python_version",
+        "platform",
+        "package_versions",
+        "model_loading",
+        "decoding"
+      ],
+      "properties": {
+        "backend": { "const": "instavar_voice_lab.faster_whisper_v1" },
+        "device": { "enum": ["cpu", "cuda"] },
+        "device_index": { "type": "integer", "minimum": 0 },
+        "compute_type": {
+          "enum": ["auto", "default", "int8", "int8_bfloat16", "int8_float16", "int8_float32", "int16", "float16", "float32", "bfloat16"]
+        },
+        "python_version": { "type": "string", "minLength": 1 },
+        "platform": { "type": "string", "minLength": 1 },
+        "package_versions": {
+          "type": "object",
+          "required": ["faster-whisper", "ctranslate2", "tokenizers", "av"],
+          "properties": {
+            "faster-whisper": { "type": "string", "minLength": 1 },
+            "ctranslate2": { "type": "string", "minLength": 1 },
+            "tokenizers": { "type": "string", "minLength": 1 },
+            "av": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        },
+        "model_loading": {
+          "type": "object",
+          "required": ["local_files_only"],
+          "properties": { "local_files_only": { "const": true } },
+          "additionalProperties": false
+        },
+        "decoding": {
+          "type": "object",
+          "required": [
+            "language",
+            "task",
+            "beam_size",
+            "temperature",
+            "condition_on_previous_text",
+            "word_timestamps",
+            "vad_filter"
+          ],
+          "properties": {
+            "language": { "type": "string", "pattern": "^[a-z]{2,3}$" },
+            "task": { "const": "transcribe" },
+            "beam_size": { "type": "integer", "minimum": 1 },
+            "temperature": { "const": 0.0 },
+            "condition_on_previous_text": { "const": false },
+            "word_timestamps": { "const": false },
+            "vad_filter": { "const": false }
+          },
+          "additionalProperties": false
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "device": { "const": "cpu" } }, "required": ["device"] },
+          "then": { "properties": { "device_index": { "const": 0 } } }
+        }
+      ],
+      "additionalProperties": false
+    },
     "artifact": {
       "type": "object",
       "required": ["role", "kind", "sha256", "bytes"],

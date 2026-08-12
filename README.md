@@ -22,6 +22,7 @@ The shared layer provides:
 - deterministic multi-reference speaker scoring with per-sample reference-set binding;
 - frozen per-prompt and per-seed speaker-reference assignments bound to generation plans and reference catalogs;
 - an optional first-party SpeechBrain ECAPA execution path with CPU and CUDA routing, runtime provenance, and a content-addressed execution receipt;
+- an optional first-party faster-whisper execution path with offline model loading, frozen decoding, and content-addressed ASR receipts;
 - content-addressed generation-attempt receipts for runtime timing, duration, and memory evidence;
 - exact-versus-derived cross-runtime artifact manifests with live content rechecks;
 - lifecycle-stage and matched-comparison declarations for every supported adaptation path;
@@ -292,7 +293,7 @@ unversioned rows so historical evidence can be inspected, and reports how many
 rows were versioned rather than silently treating them as current-contract
 evidence.
 
-The core package does not bundle model weights or require a particular ASR model. It accepts external speaker encoders and also provides an optional first-party execution path for the pinned SpeechBrain ECAPA architecture. Each sample records the extractor name and revision that produced its transcript, speaker embedding, runtime, and memory observations. Score those versioned observations with:
+The core package does not bundle model weights. It accepts external extractors and provides optional first-party execution paths for local faster-whisper ASR models and the pinned SpeechBrain ECAPA speaker architecture. Each sample records the extractor name and revision that produced its transcript, speaker embedding, runtime, and memory observations. Score those versioned observations with:
 
 ```bash
 instavar-voice-eval score-objective examples/objective-observations.json \
@@ -423,6 +424,54 @@ This protects source, extractor-artifact, and speaker-reference identity on the
 observed host. It does not prove that an extractor actually loaded the declared
 bytes, is scientifically valid, is robust to accent variation, or is free from
 hostile-host tampering.
+
+### Execute the optional faster-whisper ASR path
+
+Schema 1.5 runs one local CTranslate2 faster-whisper model directly instead of
+requiring a manually assembled ASR result document. Install `faster-whisper` in
+an isolated environment. Supply an immutable model revision and a symlink-free
+local snapshot. Hugging Face snapshots normally contain symlinks, so make a
+dereferenced copy before fingerprinting it:
+
+```bash
+cp -RL /cache/models--Systran--faster-whisper-tiny.en/snapshots/$MODEL_REVISION \
+  evaluation/faster-whisper-model
+
+instavar-voice-eval build-faster-whisper-results \
+  generation-observations.json \
+  --audio-base-dir evaluation \
+  --model-dir evaluation/faster-whisper-model \
+  --model-name Systran/faster-whisper-tiny.en \
+  --model-revision "$MODEL_REVISION" \
+  --device cpu \
+  --device-index 0 \
+  --compute-type int8 \
+  --language en \
+  --beam-size 5 \
+  --output asr-results-v1.5.json
+
+instavar-voice-eval apply-extractor-results \
+  generation-observations.json \
+  asr-results-v1.5.json \
+  --audio-base-dir evaluation \
+  --faster-whisper-model-dir evaluation/faster-whisper-model \
+  --output observations-with-executed-asr.json
+```
+
+Use `--device cuda --device-index N` only when the installed CTranslate2 build
+and host support that device. The runner passes `local_files_only=True`, binds
+the exact model tree and runner file, records Python and faster-whisper runtime
+package versions, freezes language and decoding settings, preserves per-sample
+failures, and rechecks model, runner, and audio bytes after transcription. The
+complete result document is bound by `execution_receipt_sha256` and revalidated
+when applied.
+
+The result can support WER only when `requested_text` is an independently
+trusted reference for the generated sample. A coherent transcript from a human
+recording is plumbing evidence. It does not establish TTS intelligibility,
+Singapore English coverage, pronunciation quality, accent fidelity, cadence,
+or naturalness. The receipt remains unsigned and cannot defeat a malicious
+host or prove that the dependency behaved honestly.
 
 ### Freeze multiple speaker references before evaluating candidates
 
@@ -690,4 +739,4 @@ trains, synthesizes correct speech, or sounds good.
 python3 -m unittest discover -s tests -v
 ```
 
-These tests validate contract behavior, deterministic artifact generation, proxy calculations, listening aggregation, the SpeechBrain runner through a dependency-free test double, and a complete lightweight lifecycle. They do not run heavyweight model training, real ASR, real speaker encoders, or human listening. Release evidence should record a separate real-model smoke test on the intended host and dependency set.
+These tests validate contract behavior, deterministic artifact generation, proxy calculations, listening aggregation, the SpeechBrain and faster-whisper runners through dependency-free test doubles, and a complete lightweight lifecycle. They do not run heavyweight model training, real ASR, real speaker encoders, or human listening. Release evidence should record separate real-model smoke tests on the intended host and dependency set.

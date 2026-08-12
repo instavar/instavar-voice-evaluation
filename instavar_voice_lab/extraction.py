@@ -30,11 +30,13 @@ EXTRACTION_SCHEMA_VERSION = "1.1.0"
 MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION = "1.2.0"
 PLANNED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION = "1.3.0"
 EXECUTED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION = "1.4.0"
+EXECUTED_ASR_EXTRACTION_SCHEMA_VERSION = "1.5.0"
 EXTRACTION_SCHEMA_VERSIONS = {
     EXTRACTION_SCHEMA_VERSION,
     MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
     PLANNED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
     EXECUTED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
+    EXECUTED_ASR_EXTRACTION_SCHEMA_VERSION,
 }
 EXTRACTOR_FIELDS = {
     "asr": {"hypothesis_text"},
@@ -375,6 +377,8 @@ def apply_extractor_results(
         raise ValueError("unsupported extractor kind")
     if extraction_version == EXECUTED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION and kind != "speaker_encoder":
         raise ValueError("schema 1.4 extractor results are reserved for executed speaker-encoder evidence")
+    if extraction_version == EXECUTED_ASR_EXTRACTION_SCHEMA_VERSION and kind != "asr":
+        raise ValueError("schema 1.5 extractor results are reserved for executed ASR evidence")
     if not isinstance(name, str) or not name.strip():
         raise ValueError("extractor name must be non-empty")
     revision = _immutable_revision(revision)
@@ -489,6 +493,11 @@ def apply_extractor_results(
 
             expected_document_fields.update({"execution", "execution_receipt_sha256"})
             validate_execution_receipt(extraction)
+    elif kind == "asr" and extraction_version == EXECUTED_ASR_EXTRACTION_SCHEMA_VERSION:
+        from .faster_whisper import validate_execution_receipt
+
+        expected_document_fields.update({"execution", "execution_receipt_sha256"})
+        validate_execution_receipt(extraction)
     if set(extraction) != expected_document_fields:
         raise ValueError(f"extractor result document must contain exactly {sorted(expected_document_fields)}")
 
@@ -588,7 +597,10 @@ def apply_extractor_results(
             "extractor_artifact_set_sha256": expected_extractor["artifact_set_sha256"],
             "input_audio_sha256": live_sha,
         }
-        if extraction_version == EXECUTED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION:
+        if extraction_version in {
+            EXECUTED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
+            EXECUTED_ASR_EXTRACTION_SCHEMA_VERSION,
+        }:
             provenance.update(
                 {
                     "extractor_execution": extraction["execution"],

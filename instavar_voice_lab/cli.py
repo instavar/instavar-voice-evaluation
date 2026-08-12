@@ -19,6 +19,7 @@ from .extraction import (
     build_speaker_reference_catalog,
     observation_document_sha256,
 )
+from .faster_whisper import build_faster_whisper_results, faster_whisper_artifacts
 from .lifecycle import (
     run_lifecycle,
     run_registered_lifecycle,
@@ -323,6 +324,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     speechbrain_results.add_argument("--output", type=Path, required=True)
 
+    faster_whisper_results = commands.add_parser(
+        "build-faster-whisper-results",
+        help="run a pinned local faster-whisper model and emit schema 1.5 ASR results",
+    )
+    faster_whisper_results.add_argument("observations", type=Path)
+    faster_whisper_results.add_argument("--audio-base-dir", type=Path, required=True)
+    faster_whisper_results.add_argument("--model-dir", type=Path, required=True)
+    faster_whisper_results.add_argument("--model-name", required=True)
+    faster_whisper_results.add_argument("--model-revision", required=True)
+    faster_whisper_results.add_argument("--device", default="cpu")
+    faster_whisper_results.add_argument("--device-index", type=int, default=0)
+    faster_whisper_results.add_argument("--compute-type", default="int8")
+    faster_whisper_results.add_argument("--language", default="en")
+    faster_whisper_results.add_argument("--beam-size", type=int, default=5)
+    faster_whisper_results.add_argument("--output", type=Path, required=True)
+
     apply_results = commands.add_parser(
         "apply-extractor-results",
         help="immutably augment observations with content-addressed extractor results",
@@ -340,6 +357,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--speechbrain-ecapa-model-dir",
         type=Path,
         help="verify schema 1.4 results against this model tree and the bundled runner",
+    )
+    apply_results.add_argument(
+        "--faster-whisper-model-dir",
+        type=Path,
+        help="verify schema 1.5 results against this model tree and the bundled runner",
     )
     apply_results.add_argument(
         "--speaker-reference-plan",
@@ -743,13 +765,42 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         _write_json(args.output, result)
         return 0
+    if args.command == "build-faster-whisper-results":
+        try:
+            result = build_faster_whisper_results(
+                _read_json(args.observations),
+                audio_base_dir=args.audio_base_dir,
+                model_dir=args.model_dir,
+                model_name=args.model_name,
+                model_revision=args.model_revision,
+                device=args.device,
+                device_index=args.device_index,
+                compute_type=args.compute_type,
+                language=args.language,
+                beam_size=args.beam_size,
+            )
+        except (OSError, json.JSONDecodeError, RuntimeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0
     if args.command == "apply-extractor-results":
         try:
-            if args.speechbrain_ecapa_model_dir and args.extractor_artifact:
-                raise ValueError("use either --speechbrain-ecapa-model-dir or --extractor-artifact, not both")
+            shortcut_count = sum(
+                bool(value)
+                for value in (
+                    args.speechbrain_ecapa_model_dir,
+                    args.faster_whisper_model_dir,
+                    args.extractor_artifact,
+                )
+            )
+            if shortcut_count > 1:
+                raise ValueError("use exactly one model shortcut or --extractor-artifact declaration set")
             artifacts = (
                 speechbrain_ecapa_artifacts(args.speechbrain_ecapa_model_dir)
                 if args.speechbrain_ecapa_model_dir
+                else faster_whisper_artifacts(args.faster_whisper_model_dir)
+                if args.faster_whisper_model_dir
                 else _artifact_declarations(args.extractor_artifact)
                 if args.extractor_artifact
                 else None
