@@ -92,6 +92,26 @@ def _relative_path_has_symlink(root: Path, relative_path: Path) -> bool:
     return False
 
 
+def _control_input_record(path: Path, *, role: str, display_path: str) -> dict[str, Any]:
+    if path.is_symlink():
+        raise ValueError(f"lifecycle control input must not be a symlink: {display_path}")
+    if not path.is_file():
+        raise FileNotFoundError(f"lifecycle control input not found: {display_path}")
+    return {
+        "role": role,
+        "path": display_path,
+        "sha256": _sha256(path),
+        "bytes": path.stat().st_size,
+    }
+
+
+def _verify_control_inputs(inputs: list[tuple[Path, dict[str, Any]]]) -> None:
+    for path, expected in inputs:
+        current = _control_input_record(path, role=expected["role"], display_path=expected["path"])
+        if current != expected:
+            raise ValueError(f"lifecycle control input changed after locking: {expected['role']}")
+
+
 def _validate_capability_binding(spec: dict[str, Any], spec_path: Path | None, errors: list[str]) -> None:
     starting_error_count = len(errors)
     binding = spec.get("capability_binding")
@@ -377,6 +397,20 @@ def run_registered_lifecycle(
 
 
 def run_lifecycle(spec_path: Path, experiment_path: Path, work_dir: Path) -> dict[str, Any]:
+    control_inputs = [
+        (
+            spec_path,
+            _control_input_record(spec_path, role="backend_spec", display_path=spec_path.name),
+        ),
+        (
+            experiment_path,
+            _control_input_record(
+                experiment_path,
+                role="experiment_manifest",
+                display_path=experiment_path.name,
+            ),
+        ),
+    ]
     spec = _read_json(spec_path)
     errors = validate_backend_spec(spec, spec_path=spec_path)
     if errors:
@@ -387,6 +421,18 @@ def run_lifecycle(spec_path: Path, experiment_path: Path, work_dir: Path) -> dic
         raise ValueError("invalid experiment manifest: " + "; ".join(str(error) for error in experiment_errors))
     experiment_id = str(experiment["experiment_id"]).strip()
     binding = spec.get("capability_binding")
+    if isinstance(binding, dict):
+        capability_path = spec_path.parent / binding["manifest"]
+        control_inputs.append(
+            (
+                capability_path,
+                _control_input_record(
+                    capability_path,
+                    role="capability_manifest",
+                    display_path=binding["manifest"],
+                ),
+            )
+        )
     if isinstance(binding, dict) and experiment.get("adaptation_mode") != binding.get("adaptation"):
         raise ValueError("experiment adaptation_mode does not match capability_binding.adaptation")
     missing_environment = [
@@ -396,6 +442,7 @@ def run_lifecycle(spec_path: Path, experiment_path: Path, work_dir: Path) -> dic
     ]
     if missing_environment:
         raise ValueError("missing required backend environment: " + ", ".join(sorted(missing_environment)))
+    _verify_control_inputs(control_inputs)
 
     if work_dir.is_symlink():
         raise ValueError(f"lifecycle work directory must not be a symlink: {work_dir}")
@@ -433,19 +480,25 @@ def run_lifecycle(spec_path: Path, experiment_path: Path, work_dir: Path) -> dic
         timeout_seconds = spec.get("timeout_seconds", {}).get(stage, 3600)
         timed_out = False
         completed: subprocess.CompletedProcess[str] | None = None
+        control_input_error: str | None = None
         with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
             try:
-                completed = subprocess.run(
-                    command,
-                    cwd=spec_path.parent,
-                    env=environment,
-                    stdout=stdout,
-                    stderr=stderr,
-                    check=False,
-                    timeout=timeout_seconds,
-                )
-            except subprocess.TimeoutExpired:
-                timed_out = True
+                _verify_control_inputs(control_inputs)
+                try:
+                    completed = subprocess.run(
+                        command,
+                        cwd=spec_path.parent,
+                        env=environment,
+                        stdout=stdout,
+                        stderr=stderr,
+                        check=False,
+                        timeout=timeout_seconds,
+                    )
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                _verify_control_inputs(control_inputs)
+            except (OSError, ValueError) as error:
+                control_input_error = str(error)
         report: dict[str, Any] = {
             "stage": stage,
             "started_at": started,
@@ -458,7 +511,9 @@ def run_lifecycle(spec_path: Path, experiment_path: Path, work_dir: Path) -> dic
             "status": "failed",
             "artifacts": [],
         }
-        if timed_out:
+        if control_input_error is not None:
+            report["error"] = control_input_error
+        elif timed_out:
             report["error"] = "backend command exceeded its stage timeout"
         elif completed is None:
             report["error"] = "backend command did not return a process result"
@@ -503,6 +558,7 @@ def run_lifecycle(spec_path: Path, experiment_path: Path, work_dir: Path) -> dic
         "required_environment": [
             requirement["name"] for requirement in spec.get("required_environment", [])
         ],
+        "control_inputs": [record for _, record in control_inputs],
         "experiment_id": experiment_id,
         "status": lifecycle_status,
         "started_at": lifecycle_started,

@@ -221,6 +221,14 @@ stale, cross-stage, empty, mutated, or external files from satisfying a later
 run. Use a unique work directory for every experiment attempt rather than
 reusing or manually cleaning an old run directory.
 
+The backend specification, experiment manifest, and bound capability manifest
+are immutable control inputs for one lifecycle. The runner rejects symlinked
+control files, records their sizes and SHA-256 hashes, and verifies the snapshots
+before and after every stage. A backend that mutates its experiment or a
+concurrent process that replaces a recipe cannot leave a passing lifecycle
+report. This lock proves file identity for the observed run, not the truth of
+claims inside the files.
+
 A repository with more than one adaptation or runtime recipe can declare a
 backend registry instead of relying on one conventionally named file:
 
@@ -264,9 +272,10 @@ instavar-voice-eval run-registered-lifecycle \
 ```
 
 The lifecycle report records commands, exit codes, timeouts, logs, artifact
-hashes, and the fail-closed stage boundary. A registry-based report also records
-the registry hash, selected backend ID, selected specification path, and
-specification hash. A passed fake lifecycle proves
+hashes, immutable control-input records, and the fail-closed stage boundary. A
+registry-based report also records the registry hash, selected backend ID,
+selected specification path, and specification hash. A passed fake lifecycle
+proves
 orchestration and evidence generation only. It does not prove that a real model
 trains, synthesizes correct speech, or sounds good.
 
