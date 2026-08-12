@@ -11,6 +11,8 @@ from instavar_voice_lab.listening import (
     aggregate_listening_results,
     build_blind_pack,
     build_listening_assignment_plan,
+    build_rater_review_packet,
+    build_rater_submission,
     stage_blind_audio,
     validate_listening_assignment_plan,
 )
@@ -76,6 +78,28 @@ class ListeningPackTests(unittest.TestCase):
                 },
             ],
         }
+
+    def scheduled_pack(self, rater_ids: list[str] | None = None) -> tuple[dict, dict]:
+        generation_plan = self.generation_plan()
+        assignment_plan = build_listening_assignment_plan(generation_plan, self.routing())
+        samples = [
+            {
+                "sample_id": row["sample_id"],
+                "candidate_id": row["candidate_id"],
+                "prompt_id": row["prompt_id"],
+                "seed": row["seed"],
+                "audio_path": f"{row['sample_id']}.wav",
+            }
+            for row in generation_plan["samples"]
+        ]
+        return build_blind_pack(
+            samples,
+            None,
+            seed=42,
+            assignment_plan=assignment_plan,
+            generation_plan=generation_plan,
+            rater_ids=rater_ids or ["rater-a", "rater-b"],
+        )
 
     def test_builds_deterministic_blind_pack(self) -> None:
         samples = [
@@ -386,6 +410,131 @@ class ListeningPackTests(unittest.TestCase):
         for row in audit["candidate_position_counts"]:
             self.assertTrue(all(counts == [1, 1, 1] for counts in row["candidate_position_counts"].values()))
 
+    def test_exports_one_rater_packet_and_aggregates_bound_submissions(self) -> None:
+        review, reveal = self.scheduled_pack()
+        submissions = []
+        for rater_id in ("rater-a", "rater-b"):
+            packet = build_rater_review_packet(review, rater_id)
+            self.assertEqual(packet["rater_id"], rater_id)
+            self.assertNotIn("presentation_schedules", packet)
+            other_rater = "rater-b" if rater_id == "rater-a" else "rater-a"
+            self.assertNotIn(other_rater, str(packet))
+            self.assertEqual(packet["sample_order"], [row["blind_id"] for row in packet["samples"]])
+            ratings = {
+                "scale": {"min": 1, "max": 5},
+                "presentation_log": packet["rating_order"],
+                "ratings": [
+                    {"blind_id": row["blind_id"], "criterion": criterion, "score": 3}
+                    for row in packet["samples"]
+                    for criterion in row["criteria"]
+                ],
+            }
+            submission = build_rater_submission(packet, ratings)
+            reversed_ratings = dict(ratings)
+            reversed_ratings["ratings"] = list(reversed(ratings["ratings"]))
+            self.assertEqual(submission, build_rater_submission(packet, reversed_ratings))
+            self.assertEqual(submission["coverage"]["status"], "complete")
+            self.assertEqual(submission["packet_sha256"], packet["packet_sha256"])
+            submissions.append(submission)
+        result = aggregate_listening_results(
+            review,
+            reveal,
+            {"schema_version": "1.1.0", "scale": {"min": 1, "max": 5}, "submissions": list(reversed(submissions))},
+        )
+        forward = aggregate_listening_results(
+            review,
+            reveal,
+            {"schema_version": "1.1.0", "scale": {"min": 1, "max": 5}, "submissions": submissions},
+        )
+        self.assertEqual(result, forward)
+        self.assertEqual(result["coverage"]["status"], "complete")
+        self.assertEqual(result["rater_count"], 2)
+        self.assertEqual(len(result["presentation"]["submission_receipts_sha256"]), 64)
+
+    def test_rater_delivery_contract_rejects_ood_and_forged_inputs(self) -> None:
+        review, reveal = self.scheduled_pack()
+        with self.assertRaisesRegex(ValueError, "no presentation schedule"):
+            build_rater_review_packet(review, "unknown")
+        packet = build_rater_review_packet(review, "rater-a")
+        ratings = {
+            "scale": {"min": 1, "max": 5},
+            "presentation_log": packet["rating_order"],
+            "ratings": [
+                {"blind_id": row["blind_id"], "criterion": criterion, "score": 3}
+                for row in packet["samples"]
+                for criterion in row["criteria"]
+            ],
+        }
+        tampered_packet = json.loads(json.dumps(packet))
+        tampered_packet["sample_order"].reverse()
+        with self.assertRaisesRegex(ValueError, "self-hash"):
+            build_rater_submission(tampered_packet, ratings)
+        wrong_order = dict(ratings)
+        wrong_order["presentation_log"] = list(reversed(packet["rating_order"]))
+        with self.assertRaisesRegex(ValueError, "exact prefix"):
+            build_rater_submission(packet, wrong_order)
+        with_rater_id = json.loads(json.dumps(ratings))
+        with_rater_id["ratings"][0]["rater_id"] = "rater-a"
+        with self.assertRaisesRegex(ValueError, "without rater_id"):
+            build_rater_submission(packet, with_rater_id)
+        submission = build_rater_submission(packet, ratings)
+        forged = json.loads(json.dumps(submission))
+        forged["coverage"]["observed_rating_count"] -= 1
+        forged_payload = {key: value for key, value in forged.items() if key != "submission_sha256"}
+        forged["submission_sha256"] = hashlib.sha256(
+            json.dumps(forged_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        with self.assertRaisesRegex(ValueError, "does not match its review packet"):
+            aggregate_listening_results(
+                review,
+                reveal,
+                {"schema_version": "1.1.0", "scale": {"min": 1, "max": 5}, "submissions": [forged]},
+                allow_incomplete=True,
+            )
+        with self.assertRaisesRegex(ValueError, "every scheduled rater"):
+            aggregate_listening_results(
+                review,
+                reveal,
+                {"schema_version": "1.1.0", "scale": {"min": 1, "max": 5}, "submissions": [submission]},
+            )
+
+    def test_incomplete_rater_receipt_records_attrition_without_claiming_compliance(self) -> None:
+        review, reveal = self.scheduled_pack()
+        packet = build_rater_review_packet(review, "rater-a")
+        first_cell = packet["rating_order"][0]
+        submission = build_rater_submission(
+            packet,
+            {
+                "scale": {"min": 1, "max": 5},
+                "presentation_log": [first_cell],
+                "ratings": [
+                    {"blind_id": first_cell["blind_id"], "criterion": first_cell["criterion"], "score": 3}
+                ],
+            },
+            allow_incomplete=True,
+        )
+        self.assertEqual(submission["coverage"]["status"], "incomplete")
+        self.assertIn("self-attested", submission["compliance_boundary"])
+        result = aggregate_listening_results(
+            review,
+            reveal,
+            {"schema_version": "1.1.0", "scale": {"min": 1, "max": 5}, "submissions": [submission]},
+            allow_incomplete=True,
+        )
+        self.assertEqual(result["coverage"]["status"], "incomplete")
+        self.assertEqual(result["expected_rater_count"], 2)
+        self.assertEqual(result["rater_count"], 1)
+
+        no_returns = aggregate_listening_results(
+            review,
+            reveal,
+            {"schema_version": "1.1.0", "scale": {"min": 1, "max": 5}, "submissions": []},
+            allow_incomplete=True,
+        )
+        self.assertEqual(no_returns["rater_count"], 0)
+        self.assertEqual(no_returns["expected_rater_count"], 2)
+        self.assertEqual(no_returns["coverage"]["status"], "incomplete")
+
     def test_assignment_plan_rejects_tampering_and_ood_routing(self) -> None:
         generation_plan = self.generation_plan()
         plan = build_listening_assignment_plan(generation_plan, self.routing())
@@ -528,6 +677,52 @@ class ListeningPackTests(unittest.TestCase):
                 [row["rater_id"] for row in review["presentation_schedules"]],
                 ["rater-a", "rater-b"],
             )
+            packet_path = root / "rater-a-packet.json"
+            ratings_path = root / "rater-a-ratings.json"
+            submission_path = root / "rater-a-submission.json"
+            self.assertEqual(
+                main(
+                    [
+                        "export-rater-listening-packet",
+                        str(review_path),
+                        "--rater-id",
+                        "rater-a",
+                        "--output",
+                        str(packet_path),
+                    ]
+                ),
+                0,
+            )
+            packet = json.loads(packet_path.read_text(encoding="utf-8"))
+            ratings_path.write_text(
+                json.dumps(
+                    {
+                        "scale": {"min": 1, "max": 5},
+                        "presentation_log": packet["rating_order"],
+                        "ratings": [
+                            {"blind_id": row["blind_id"], "criterion": criterion, "score": 3}
+                            for row in packet["samples"]
+                            for criterion in row["criteria"]
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                main(
+                    [
+                        "build-rater-listening-submission",
+                        str(packet_path),
+                        str(ratings_path),
+                        "--output",
+                        str(submission_path),
+                    ]
+                ),
+                0,
+            )
+            submission = json.loads(submission_path.read_text(encoding="utf-8"))
+            self.assertEqual(submission["rater_id"], "rater-a")
+            self.assertEqual(submission["coverage"]["status"], "complete")
 
     def test_rejects_incomplete_rating_matrix_by_default(self) -> None:
         samples = [

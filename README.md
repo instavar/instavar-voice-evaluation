@@ -327,6 +327,42 @@ of raters, or prove that reviewers followed their assigned schedules. A study
 coordinator must distribute the correct schedule and retain the reveal file
 outside the review surface.
 
+Export one reviewer packet from the coordinator-only master review:
+
+```bash
+instavar-voice-eval export-rater-listening-packet listening-review.json \
+  --rater-id rater-001 \
+  --output rater-001-packet.json
+```
+
+The packet contains the blind items and only that pseudonymous rater's schedule.
+After review, bind the scores and a declared presentation log to the packet:
+
+```bash
+instavar-voice-eval build-rater-listening-submission \
+  rater-001-packet.json rater-001-ratings.json \
+  --output rater-001-submission.json
+```
+
+The ratings input contains `scale`, `presentation_log`, and `ratings`. Rating
+rows contain exactly `blind_id`, `criterion`, and `score`; the packet supplies
+the rater identity. The builder rejects out-of-order logs, unpresented samples,
+unassigned criteria, duplicate cells, and incomplete matrices by default. It
+canonicalizes row order so equivalent inputs produce the same receipt.
+
+To aggregate receipts, create a schema 1.1.0 document whose `scale` declares the
+shared rating scale and whose `submissions` array contains every returned
+submission, then pass that document as the ratings argument to
+`aggregate-listening`. Aggregation reconstructs the expected packet
+and submission for each scheduled rater, rejects rehashed forged metadata, and
+records a digest of the canonical receipt set. `--allow-incomplete` preserves
+missing raters and rating cells as explicit attrition evidence.
+
+Each presentation-log entry contains one `criterion` and `blind_id`, following
+the packet's criterion-major rating order. The log is self-attested. It does not
+prove who received the packet, that audio was heard in the declared order, that
+the reviewer remained attentive, or that reviewers acted independently.
+
 For compatibility with an older study that intentionally assigned every
 criterion to every sample, omit the two plan options and pass
 `--criteria criteria.json`. The resulting coverage report labels that mode

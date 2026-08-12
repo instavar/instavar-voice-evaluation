@@ -14,6 +14,8 @@ from .metrics import bootstrap_mean_interval
 LISTENING_ASSIGNMENT_PLAN_SCHEMA_VERSION = "1.2.0"
 LISTENING_ROUTING_SCHEMA_VERSION = "1.1.0"
 LISTENING_PRESENTATION_SCHEDULE_SCHEMA_VERSION = "1.0.0"
+LISTENING_RATER_PACKET_SCHEMA_VERSION = "1.0.0"
+LISTENING_RATER_SUBMISSION_SCHEMA_VERSION = "1.0.0"
 _ROUTING_SELECTORS = {"all_samples", "categories", "categories_or_lexical_anchors", "lexical_anchors"}
 _CRITERION_DIRECTIONS = {"higher_is_better", "lower_is_better"}
 
@@ -517,6 +519,271 @@ def _validate_presentation_schedules(
     return scheduled_raters
 
 
+def build_rater_review_packet(review: dict[str, Any], rater_id: str) -> dict[str, Any]:
+    if not isinstance(review, dict):
+        raise ValueError("review must be an object")
+    if not isinstance(rater_id, str) or not rater_id.strip():
+        raise ValueError("rater_id must be a non-empty string")
+    rater_id = rater_id.strip()
+    criteria = review.get("criteria")
+    review_rows = review.get("samples")
+    if (
+        not isinstance(criteria, list)
+        or not criteria
+        or any(not isinstance(value, str) or not value.strip() for value in criteria)
+        or len(set(criteria)) != len(criteria)
+        or not isinstance(review_rows, list)
+        or not review_rows
+    ):
+        raise ValueError("review must contain criteria and samples")
+    scheduled_raters = _validate_presentation_schedules(review, criteria, review_rows)
+    if scheduled_raters is None:
+        raise ValueError("review does not contain per-rater presentation schedules")
+    if rater_id not in scheduled_raters:
+        raise ValueError(f"review has no presentation schedule for rater_id: {rater_id}")
+    schedule = next(row for row in review["presentation_schedules"] if row["rater_id"] == rater_id)
+    review_by_id = {row["blind_id"]: row for row in review_rows}
+    rating_order = [
+        {"criterion": criterion, "blind_id": blind_id}
+        for criterion in criteria
+        for blind_id in schedule["criterion_orders"][criterion]
+    ]
+    payload = {
+        "schema_version": LISTENING_RATER_PACKET_SCHEMA_VERSION,
+        "master_review_sha256": _digest(review),
+        "presentation_schedule_schema_version": LISTENING_PRESENTATION_SCHEDULE_SCHEMA_VERSION,
+        "rater_id": rater_id,
+        "schedule_sha256": schedule["schedule_sha256"],
+        "criteria": list(criteria),
+        "criterion_definitions": review.get("criterion_definitions"),
+        "instructions": review.get("instructions"),
+        "sample_order": list(schedule["sample_order"]),
+        "criterion_orders": dict(schedule["criterion_orders"]),
+        "rating_order": rating_order,
+        "samples": [dict(review_by_id[blind_id]) for blind_id in schedule["sample_order"]],
+        "evidence_boundary": (
+            "This packet contains only one pseudonymous rater schedule and blind review items. It does not prove "
+            "that the intended reviewer received it or followed its order."
+        ),
+    }
+    return {**payload, "packet_sha256": _digest(payload)}
+
+
+def _validate_rater_packet(packet: Any) -> tuple[str, dict[str, list[str]]]:
+    if not isinstance(packet, dict) or packet.get("schema_version") != LISTENING_RATER_PACKET_SCHEMA_VERSION:
+        raise ValueError(f"rater packet schema_version must equal {LISTENING_RATER_PACKET_SCHEMA_VERSION}")
+    payload = {key: value for key, value in packet.items() if key != "packet_sha256"}
+    if packet.get("packet_sha256") != _digest(payload):
+        raise ValueError("rater packet self-hash does not match its content")
+    rater_id = packet.get("rater_id")
+    if not isinstance(rater_id, str) or not rater_id.strip():
+        raise ValueError("rater packet rater_id must be a non-empty string")
+    sample_order = packet.get("sample_order")
+    samples = packet.get("samples")
+    if (
+        not isinstance(sample_order, list)
+        or not sample_order
+        or any(not isinstance(value, str) or not value for value in sample_order)
+        or not isinstance(samples, list)
+    ):
+        raise ValueError("rater packet must contain sample_order and samples")
+    sample_by_id = {
+        row.get("blind_id"): row
+        for row in samples
+        if isinstance(row, dict) and isinstance(row.get("blind_id"), str)
+    }
+    if len(sample_by_id) != len(samples) or sample_order != [row.get("blind_id") for row in samples]:
+        raise ValueError("rater packet samples must exactly follow sample_order")
+    criteria = packet.get("criteria")
+    if (
+        not isinstance(criteria, list)
+        or not criteria
+        or any(not isinstance(value, str) or not value.strip() for value in criteria)
+        or len(set(criteria)) != len(criteria)
+    ):
+        raise ValueError("rater packet criteria must be a non-empty unique array")
+    criterion_orders = packet.get("criterion_orders")
+    if not isinstance(criterion_orders, dict) or set(criterion_orders) != set(criteria):
+        raise ValueError("rater packet criterion_orders must cover every criterion")
+    criteria_by_blind: dict[str, list[str]] = {}
+    for blind_id in sample_order:
+        row = sample_by_id.get(blind_id)
+        assigned = row.get("criteria", criteria) if row else None
+        if (
+            not isinstance(assigned, list)
+            or not assigned
+            or any(not isinstance(value, str) or value not in criteria for value in assigned)
+            or len(set(assigned)) != len(assigned)
+        ):
+            raise ValueError(f"rater packet sample has invalid criteria: {blind_id}")
+        criteria_by_blind[blind_id] = assigned
+    for criterion in criteria:
+        expected = [blind_id for blind_id in sample_order if criterion in criteria_by_blind[blind_id]]
+        if criterion_orders[criterion] != expected:
+            raise ValueError(f"rater packet criterion order does not match assigned samples: {criterion}")
+    expected_rating_order = [
+        {"criterion": criterion, "blind_id": blind_id}
+        for criterion in criteria
+        for blind_id in criterion_orders[criterion]
+    ]
+    if packet.get("rating_order") != expected_rating_order:
+        raise ValueError("rater packet rating_order must follow criterion_orders")
+    return rater_id, criteria_by_blind
+
+
+def build_rater_submission(
+    packet: dict[str, Any], ratings_document: dict[str, Any], *, allow_incomplete: bool = False
+) -> dict[str, Any]:
+    rater_id, criteria_by_blind = _validate_rater_packet(packet)
+    if not isinstance(ratings_document, dict):
+        raise ValueError("rater ratings must be an object")
+    scale = ratings_document.get("scale")
+    ratings = ratings_document.get("ratings")
+    presentation_log = ratings_document.get("presentation_log")
+    if not isinstance(scale, dict) or not isinstance(ratings, list) or not isinstance(presentation_log, list):
+        raise ValueError("rater ratings must contain scale, ratings, and presentation_log")
+    minimum = scale.get("min")
+    maximum = scale.get("max")
+    if (
+        isinstance(minimum, bool)
+        or isinstance(maximum, bool)
+        or not isinstance(minimum, (int, float))
+        or not isinstance(maximum, (int, float))
+        or minimum >= maximum
+    ):
+        raise ValueError("rater ratings scale must contain numeric min smaller than max")
+    rating_order = packet["rating_order"]
+    if (
+        any(
+            not isinstance(value, dict)
+            or set(value) != {"criterion", "blind_id"}
+            or not isinstance(value["criterion"], str)
+            or not isinstance(value["blind_id"], str)
+            for value in presentation_log
+        )
+        or len({_digest(value) for value in presentation_log}) != len(presentation_log)
+        or presentation_log != rating_order[: len(presentation_log)]
+    ):
+        raise ValueError("rater presentation_log must be an exact prefix of the assigned rating order")
+    if not allow_incomplete and presentation_log != rating_order:
+        raise ValueError("rater presentation_log is incomplete")
+    presented = {(row["blind_id"], row["criterion"]) for row in presentation_log}
+    normalized_ratings: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for index, rating in enumerate(ratings):
+        if not isinstance(rating, dict) or "rater_id" in rating:
+            raise ValueError(f"rater rating {index} must be an object without rater_id")
+        required = {"blind_id", "criterion", "score"}
+        if set(rating) != required:
+            raise ValueError(f"rater rating {index} must contain exactly blind_id, criterion, and score")
+        blind_id = rating["blind_id"]
+        criterion = rating["criterion"]
+        score = rating["score"]
+        if (blind_id, criterion) not in presented or criterion not in criteria_by_blind.get(blind_id, []):
+            raise ValueError(f"rater rating {index} is outside the presented assigned matrix")
+        if isinstance(score, bool) or not isinstance(score, (int, float)) or not minimum <= score <= maximum:
+            raise ValueError(f"rater rating {index} score is outside the declared scale")
+        key = (blind_id, criterion)
+        if key in seen:
+            raise ValueError(f"duplicate rater rating for sample and criterion: {key}")
+        seen.add(key)
+        normalized_ratings.append({"blind_id": blind_id, "criterion": criterion, "score": score})
+    rating_positions = {
+        (row["blind_id"], row["criterion"]): index for index, row in enumerate(rating_order)
+    }
+    normalized_ratings.sort(key=lambda row: rating_positions[(row["blind_id"], row["criterion"])])
+    expected = {(row["blind_id"], row["criterion"]) for row in rating_order}
+    missing = sorted(expected - seen)
+    if missing and not allow_incomplete:
+        raise ValueError("rater ratings matrix is incomplete")
+    payload = {
+        "schema_version": LISTENING_RATER_SUBMISSION_SCHEMA_VERSION,
+        "rater_id": rater_id,
+        "packet_sha256": packet["packet_sha256"],
+        "schedule_sha256": packet["schedule_sha256"],
+        "scale": {"min": minimum, "max": maximum},
+        "presentation_log": list(presentation_log),
+        "ratings": normalized_ratings,
+        "coverage": {
+            "status": "complete" if presentation_log == rating_order and not missing else "incomplete",
+            "expected_rating_count": len(expected),
+            "presented_rating_count": len(presented),
+            "observed_rating_count": len(seen),
+            "missing_rating_count": len(missing),
+        },
+        "compliance_boundary": (
+            "The presentation log is a self-attested receipt bound to this packet. It does not independently "
+            "prove delivery identity, listening order, attention, or reviewer independence."
+        ),
+    }
+    return {**payload, "submission_sha256": _digest(payload)}
+
+
+def _ratings_from_rater_submissions(
+    review: dict[str, Any], ratings_document: dict[str, Any], *, allow_incomplete: bool
+) -> dict[str, Any] | None:
+    if not isinstance(ratings_document, dict):
+        raise ValueError("ratings document must be an object")
+    submissions = ratings_document.get("submissions")
+    if submissions is None:
+        return None
+    if ratings_document.get("schema_version") != "1.1.0" or not isinstance(submissions, list):
+        raise ValueError("rater submission bundle must use schema 1.1.0 and contain a submissions array")
+    bundle_scale = ratings_document.get("scale")
+    if not isinstance(bundle_scale, dict):
+        raise ValueError("rater submission bundle must declare one shared scale")
+    if not submissions and not allow_incomplete:
+        raise ValueError("rater submission bundle must contain every scheduled rater")
+    schedules = review.get("presentation_schedules")
+    if not isinstance(schedules, list) or not schedules:
+        raise ValueError("rater submissions require review presentation schedules")
+    expected_raters: set[str] = set()
+    for index, schedule in enumerate(schedules):
+        rater_id = schedule.get("rater_id") if isinstance(schedule, dict) else None
+        if not isinstance(rater_id, str) or not rater_id.strip() or rater_id in expected_raters:
+            raise ValueError(f"review presentation schedule {index} has an empty or duplicate rater_id")
+        expected_raters.add(rater_id)
+    seen_raters: set[str] = set()
+    scales: set[str] = set()
+    normalized: list[dict[str, Any]] = []
+    ordered_submissions = sorted(
+        submissions,
+        key=lambda row: str(row.get("rater_id", "")) if isinstance(row, dict) else "",
+    )
+    canonical_submissions: list[dict[str, Any]] = []
+    for index, submission in enumerate(ordered_submissions):
+        if not isinstance(submission, dict):
+            raise ValueError(f"rater submission {index} must be an object")
+        rater_id = submission.get("rater_id")
+        if rater_id not in expected_raters or rater_id in seen_raters:
+            raise ValueError(f"rater submission {index} has an unknown or duplicate rater_id")
+        seen_raters.add(rater_id)
+        packet = build_rater_review_packet(review, rater_id)
+        source = {
+            "scale": submission.get("scale"),
+            "presentation_log": submission.get("presentation_log"),
+            "ratings": submission.get("ratings"),
+        }
+        expected_submission = build_rater_submission(packet, source, allow_incomplete=allow_incomplete)
+        if submission != expected_submission:
+            raise ValueError(f"rater submission {index} does not match its review packet")
+        if expected_submission["scale"] != bundle_scale:
+            raise ValueError("rater submissions must match the bundle rating scale")
+        canonical_submissions.append(expected_submission)
+        scales.add(_digest(expected_submission["scale"]))
+        normalized.extend({"rater_id": rater_id, **row} for row in expected_submission["ratings"])
+    if len(scales) > 1:
+        raise ValueError("rater submissions must use one shared rating scale")
+    if not allow_incomplete and seen_raters != expected_raters:
+        raise ValueError("rater submission bundle must contain every scheduled rater")
+    return {
+        "scale": bundle_scale,
+        "expected_rater_ids": sorted(expected_raters),
+        "ratings": normalized,
+        "submission_receipts_sha256": _digest(canonical_submissions),
+    }
+
+
 def build_blind_pack(
     samples: list[dict[str, Any]],
     criteria: list[str] | None,
@@ -741,8 +1008,16 @@ def aggregate_listening_results(
     seed: int = 20260812,
     allow_incomplete: bool = False,
 ) -> dict[str, Any]:
+    if not isinstance(review, dict) or not isinstance(reveal, dict):
+        raise ValueError("review and reveal documents must be objects")
     if _digest(review) != reveal.get("review_sha256"):
         raise ValueError("reveal mapping does not match the review document")
+    normalized_submissions = _ratings_from_rater_submissions(
+        review, ratings_document, allow_incomplete=allow_incomplete
+    )
+    uses_rater_submissions = normalized_submissions is not None
+    if normalized_submissions is not None:
+        ratings_document = normalized_submissions
     criteria = review.get("criteria")
     if (
         not isinstance(criteria, list)
@@ -779,7 +1054,13 @@ def aggregate_listening_results(
         raise ValueError("ratings document must contain scale and ratings")
     minimum = scale.get("min")
     maximum = scale.get("max")
-    if not isinstance(minimum, (int, float)) or not isinstance(maximum, (int, float)) or minimum >= maximum:
+    if (
+        isinstance(minimum, bool)
+        or isinstance(maximum, bool)
+        or not isinstance(minimum, (int, float))
+        or not isinstance(maximum, (int, float))
+        or minimum >= maximum
+    ):
         raise ValueError("ratings scale must contain numeric min smaller than max")
     expected_rater_values = ratings_document.get("expected_rater_ids")
     if expected_rater_values is None and not allow_incomplete:
@@ -936,6 +1217,17 @@ def aggregate_listening_results(
             "mode": "counterbalanced_per_rater" if scheduled_rater_ids is not None else "shared_global_order",
             "scheduled_rater_count": len(scheduled_rater_ids or set()),
             "counterbalance_audit_sha256": review.get("counterbalance_audit_sha256"),
+            **(
+                {
+                    "submission_receipts_sha256": ratings_document["submission_receipts_sha256"],
+                    "receipt_evidence_boundary": (
+                        "Receipt hashes bind declared content to reconstructed packets but are not signatures and "
+                        "do not prove reviewer identity, delivery, order compliance, attention, or independence."
+                    ),
+                }
+                if uses_rater_submissions
+                else {}
+            ),
         },
         "rater_count": len(rater_ids),
         "expected_rater_count": len(expected_rater_ids),

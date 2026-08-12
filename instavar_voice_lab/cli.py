@@ -31,6 +31,8 @@ from .listening import (
     aggregate_listening_results,
     build_blind_pack,
     build_listening_assignment_plan,
+    build_rater_review_packet,
+    build_rater_submission,
     stage_blind_audio,
 )
 from .metrics import score_objective_observations
@@ -212,6 +214,23 @@ def build_parser() -> argparse.ArgumentParser:
     listening_assignments.add_argument("generation_plan", type=Path)
     listening_assignments.add_argument("--routing", type=Path, required=True)
     listening_assignments.add_argument("--output", type=Path, required=True)
+
+    rater_packet = commands.add_parser(
+        "export-rater-listening-packet",
+        help="export one privacy-preserving pseudonymous rater schedule from a master review",
+    )
+    rater_packet.add_argument("review", type=Path)
+    rater_packet.add_argument("--rater-id", required=True)
+    rater_packet.add_argument("--output", type=Path, required=True)
+
+    rater_submission = commands.add_parser(
+        "build-rater-listening-submission",
+        help="bind one rater's scores and self-attested presentation log to an exported packet",
+    )
+    rater_submission.add_argument("packet", type=Path)
+    rater_submission.add_argument("ratings", type=Path)
+    rater_submission.add_argument("--output", type=Path, required=True)
+    rater_submission.add_argument("--allow-incomplete", action="store_true")
 
     objective = commands.add_parser(
         "score-objective",
@@ -669,6 +688,26 @@ def main(argv: list[str] | None = None) -> int:
             result = build_listening_assignment_plan(
                 _read_json(args.generation_plan),
                 _read_json(args.routing),
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0
+    if args.command == "export-rater-listening-packet":
+        try:
+            result = build_rater_review_packet(_read_json(args.review), args.rater_id)
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0
+    if args.command == "build-rater-listening-submission":
+        try:
+            result = build_rater_submission(
+                _read_json(args.packet),
+                _read_json(args.ratings),
+                allow_incomplete=args.allow_incomplete,
             )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             print(error, file=sys.stderr)
