@@ -4,10 +4,12 @@ import hashlib
 import json
 import re
 from collections import defaultdict
+from pathlib import Path
 from statistics import mean, median
 from typing import Any
 
 from .metrics import bootstrap_mean_interval, score_objective_observations
+from .runtime_artifacts import exact_runtime_binding, verify_runtime_artifact_manifest
 
 
 METRIC_DIRECTIONS = {
@@ -296,5 +298,71 @@ def compare_matched_candidates(
         "evidence_boundary": (
             "A passed matched comparison proves exact prompt and seed pairing plus consistent extractor provenance. "
             "Objective deltas remain proxies and do not establish speaker identity, accent fidelity, cadence, naturalness, or preference."
+        ),
+    }
+
+
+def compare_runtime_candidates(
+    rows: list[dict[str, Any]],
+    *,
+    plan: dict[str, Any],
+    artifact_manifest: dict[str, Any],
+    artifact_binding_plan: dict[str, Any],
+    artifact_base_dir: Path,
+    reference_candidate_id: str,
+    candidate_candidate_id: str,
+    reference_runtime_id: str,
+    candidate_runtime_id: str,
+    seed: int = 20260812,
+) -> dict[str, Any]:
+    if reference_runtime_id == candidate_runtime_id:
+        raise ValueError("runtime comparison requires two distinct runtime ids")
+    verification = verify_runtime_artifact_manifest(
+        artifact_manifest,
+        artifact_binding_plan,
+        base_dir=artifact_base_dir,
+    )
+    binding = exact_runtime_binding(artifact_manifest, {reference_runtime_id, candidate_runtime_id})
+    selected = [
+        row
+        for row in rows
+        if row.get("candidate_id") in {reference_candidate_id, candidate_candidate_id}
+    ]
+    if not selected:
+        raise ValueError("no observations matched the requested runtime candidates")
+    expected_runtime = {
+        reference_candidate_id: reference_runtime_id,
+        candidate_candidate_id: candidate_runtime_id,
+    }
+    for index, row in enumerate(selected):
+        candidate_id = row.get("candidate_id")
+        if row.get("runtime_id") != expected_runtime.get(candidate_id):
+            raise ValueError(f"observation {index} runtime_id does not match its requested candidate binding")
+        if row.get("artifact_set_id") != binding["artifact_set_id"]:
+            raise ValueError(f"observation {index} artifact_set_id does not match the runtime artifact manifest")
+        if row.get("artifact_set_sha256") != binding["source_artifact_set_sha256"]:
+            raise ValueError(f"observation {index} artifact_set_sha256 does not match the runtime artifact manifest")
+
+    objective = compare_matched_candidates(
+        rows,
+        plan=plan,
+        baseline_candidate_id=reference_candidate_id,
+        adapted_candidate_id=candidate_candidate_id,
+        seed=seed,
+    )
+    return {
+        "schema_version": "1.0.0",
+        "status": "passed",
+        "reference": {"candidate_id": reference_candidate_id, "runtime_id": reference_runtime_id},
+        "candidate": {"candidate_id": candidate_candidate_id, "runtime_id": candidate_runtime_id},
+        "artifact_binding": binding,
+        "artifact_verification": verification,
+        "objective_comparison": objective,
+        "proves_shared_artifact_identity": True,
+        "proves_runtime_equivalence": False,
+        "evidence_boundary": (
+            "A passed runtime comparison proves current exact artifact fingerprints plus matched prompt, seed, text, "
+            "observation coverage, and extractor provenance. It does not prove that either runtime loaded the declared "
+            "bytes, numerical equivalence, speaker identity, accent fidelity, cadence, naturalness, or preference."
         ),
     }

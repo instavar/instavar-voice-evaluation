@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from .audio_probe import compare_wav_probes, probe_wav
-from .comparison import compare_matched_candidates
+from .comparison import compare_matched_candidates, compare_runtime_candidates
 from .contracts import VALIDATORS, validate_document
 from .corpus import audit_corpus
 from .lifecycle import (
@@ -18,6 +18,11 @@ from .lifecycle import (
 from .lineage import build_dataset_lineage, validate_dataset_lineage, verify_dataset_lineage
 from .listening import aggregate_listening_results, build_blind_pack, stage_blind_audio
 from .metrics import score_objective_observations
+from .runtime_artifacts import (
+    build_runtime_artifact_manifest,
+    validate_runtime_artifact_manifest,
+    verify_runtime_artifact_manifest,
+)
 from .suite import build_generation_plan, check_suite_coverage, validate_prompt_pack
 
 
@@ -105,6 +110,21 @@ def build_parser() -> argparse.ArgumentParser:
     verify_lineage.add_argument("--output-artifact", action="append", required=True, help="ROLE=file|tree=PATH")
     verify_lineage.add_argument("--report", type=Path)
 
+    build_runtime_artifacts = commands.add_parser(
+        "build-runtime-artifact-manifest",
+        help="fingerprint source and runtime artifact sets from a local binding plan",
+    )
+    build_runtime_artifacts.add_argument("binding_plan", type=Path)
+    build_runtime_artifacts.add_argument("--output", type=Path, required=True)
+
+    verify_runtime_artifacts = commands.add_parser(
+        "verify-runtime-artifact-manifest",
+        help="verify a runtime artifact manifest against a local binding plan and current files",
+    )
+    verify_runtime_artifacts.add_argument("manifest", type=Path)
+    verify_runtime_artifacts.add_argument("binding_plan", type=Path)
+    verify_runtime_artifacts.add_argument("--report", type=Path)
+
     probe = commands.add_parser("probe-audio", help="record deterministic diagnostics for a PCM WAV file")
     probe.add_argument("wav", type=Path)
     probe.add_argument("--output", type=Path)
@@ -165,6 +185,21 @@ def build_parser() -> argparse.ArgumentParser:
     matched.add_argument("--adapted", required=True)
     matched.add_argument("--output", type=Path, required=True)
     matched.add_argument("--seed", type=int, default=20260812)
+
+    runtime_comparison = commands.add_parser(
+        "compare-runtimes",
+        help="compare matched runtime observations bound to one exact artifact set",
+    )
+    runtime_comparison.add_argument("observations", type=Path)
+    runtime_comparison.add_argument("--plan", type=Path, required=True)
+    runtime_comparison.add_argument("--artifact-manifest", type=Path, required=True)
+    runtime_comparison.add_argument("--artifact-binding-plan", type=Path, required=True)
+    runtime_comparison.add_argument("--reference-candidate", required=True)
+    runtime_comparison.add_argument("--candidate", required=True)
+    runtime_comparison.add_argument("--reference-runtime", required=True)
+    runtime_comparison.add_argument("--candidate-runtime", required=True)
+    runtime_comparison.add_argument("--seed", type=int, default=20260812)
+    runtime_comparison.add_argument("--output", type=Path, required=True)
 
     backend = commands.add_parser("validate-backend", help="validate a lifecycle backend specification")
     backend.add_argument("spec", type=Path)
@@ -270,6 +305,36 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(json.dumps(result, indent=2, sort_keys=True))
         return 0
+    if args.command == "build-runtime-artifact-manifest":
+        try:
+            result = build_runtime_artifact_manifest(
+                _read_json(args.binding_plan),
+                base_dir=args.binding_plan.parent.resolve(),
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0
+    if args.command == "verify-runtime-artifact-manifest":
+        try:
+            document = _read_json(args.manifest)
+            contract_errors = validate_runtime_artifact_manifest(document)
+            if contract_errors:
+                raise ValueError("invalid runtime artifact manifest: " + "; ".join(contract_errors))
+            result = verify_runtime_artifact_manifest(
+                document,
+                _read_json(args.binding_plan),
+                base_dir=args.binding_plan.parent.resolve(),
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        if args.report:
+            _write_json(args.report, result)
+        else:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
     if args.command == "probe-audio":
         try:
             result = probe_wav(args.wav)
@@ -358,6 +423,28 @@ def main(argv: list[str] | None = None) -> int:
                 plan=_read_json(args.plan),
                 baseline_candidate_id=args.baseline,
                 adapted_candidate_id=args.adapted,
+                seed=args.seed,
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0
+    if args.command == "compare-runtimes":
+        try:
+            rows = _read_json(args.observations)
+            if not isinstance(rows, list):
+                raise ValueError("objective observations must be a JSON array")
+            result = compare_runtime_candidates(
+                rows,
+                plan=_read_json(args.plan),
+                artifact_manifest=_read_json(args.artifact_manifest),
+                artifact_binding_plan=_read_json(args.artifact_binding_plan),
+                artifact_base_dir=args.artifact_binding_plan.parent.resolve(),
+                reference_candidate_id=args.reference_candidate,
+                candidate_candidate_id=args.candidate,
+                reference_runtime_id=args.reference_runtime,
+                candidate_runtime_id=args.candidate_runtime,
                 seed=args.seed,
             )
         except (OSError, json.JSONDecodeError, ValueError) as error:

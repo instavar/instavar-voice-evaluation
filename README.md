@@ -16,6 +16,7 @@ The shared layer provides:
 - a fail-closed lifecycle runner for model-specific preflight, training, inference, evaluation, and packaging;
 - a frozen candidate by prompt by seed generation plan with completeness accounting;
 - exact baseline-versus-adapted pairing with extractor-provenance checks and paired bootstrap intervals;
+- exact-versus-derived cross-runtime artifact manifests with live content rechecks;
 - lifecycle-stage and matched-comparison declarations for every supported adaptation path;
 - examples and unit tests for every contract.
 
@@ -103,6 +104,80 @@ instavar-voice-eval compare-audio pytorch.wav alternative-runtime.wav \
 ```
 
 The comparison records format matches and candidate-minus-reference deltas. It deliberately emits `proves_runtime_equivalence: false`: matching container and signal-level diagnostics cannot establish text, speaker, accent, cadence, or perceptual equivalence.
+
+## Bind artifacts across runtimes
+
+Before comparing runtimes, write a local binding plan that names the source
+artifact components and the files each runtime will consume:
+
+```json
+{
+  "artifact_set_id": "female01-step-14000",
+  "producer": {
+    "repository": "instavar/indextts2-finetuning",
+    "revision": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "source_artifacts": [
+    { "role": "checkpoint", "kind": "tree", "path": "/models/step-14000" }
+  ],
+  "runtime_bindings": [
+    {
+      "runtime_id": "pytorch",
+      "relation": "exact",
+      "artifacts": [
+        { "role": "checkpoint", "kind": "tree", "path": "/models/step-14000" }
+      ]
+    },
+    {
+      "runtime_id": "mlx",
+      "relation": "derived",
+      "artifacts": [
+        { "role": "checkpoint", "kind": "tree", "path": "/models/step-14000-mlx" }
+      ],
+      "conversion": { "tool": "example-converter", "revision": "1.0.0" }
+    }
+  ]
+}
+```
+
+Build and verify the path-free public manifest:
+
+```bash
+instavar-voice-eval build-runtime-artifact-manifest runtime-binding-plan.json \
+  --output runtime-artifact-manifest.json
+
+instavar-voice-eval verify-runtime-artifact-manifest \
+  runtime-artifact-manifest.json runtime-binding-plan.json \
+  --report runtime-artifact-verification.json
+```
+
+An `exact` binding must have the same roles, kinds, sizes, and content hashes as
+the source set. A `derived` binding records converter provenance and is barred
+from exact-artifact comparison even if its output happens to have the same
+bytes. The local plan may contain absolute paths; the emitted manifest does not.
+
+Every runtime observation used below must record `runtime_id`,
+`artifact_set_id`, and `artifact_set_sha256`. Compare matched rows with a live
+artifact recheck:
+
+```bash
+instavar-voice-eval compare-runtimes objective-observations.json \
+  --plan generation-plan.json \
+  --artifact-manifest runtime-artifact-manifest.json \
+  --artifact-binding-plan runtime-binding-plan.json \
+  --reference-candidate voice-pytorch \
+  --candidate voice-cuda-graph \
+  --reference-runtime pytorch \
+  --candidate-runtime cuda-graph \
+  --output runtime-objective-comparison.json
+```
+
+A passing report proves current exact artifact fingerprints, frozen sample
+pairing, and consistent extractor provenance. It still cannot prove that either
+runtime loaded the declared bytes or that the audio is numerically or
+perceptually equivalent. Converted MLX, ONNX, TensorRT, quantized, or merged
+representations remain derived until evaluated under an explicit conversion
+contract.
 
 ## Audit a training corpus
 
