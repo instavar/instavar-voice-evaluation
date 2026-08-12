@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "backend_id": "instavar-fake-backend",
   "commands": {
     "preflight": ["{python}", "-m", "instavar_voice_lab.fake_backend", "preflight"],
@@ -14,5 +14,12 @@
     "infer": ["infer/candidate.wav"],
     "evaluate": ["evaluate/objective-observations.json"],
     "package": ["package/adapter-package.bin"]
+  },
+  "timeout_seconds": {
+    "preflight": 30,
+    "train": 30,
+    "infer": 30,
+    "evaluate": 30,
+    "package": 30
   }
 }

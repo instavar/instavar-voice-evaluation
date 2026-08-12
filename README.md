@@ -202,6 +202,14 @@ perceptual improvement.
 
 A backend specification supplies argument arrays for five model-specific stages: preflight, train, infer, evaluate, and package. Commands are executed directly without a shell. Every stage must return success, write its stage result, and produce all declared artifacts before the next stage runs.
 
+Backend specification 1.1 requires a positive timeout for every stage. The
+runner also requires a new or empty non-symlink work directory, validates the
+complete experiment manifest before invoking a backend, rejects absolute or
+parent-traversing artifact paths, and refuses symlinked stage results or
+artifacts. These checks prevent stale files or external paths from satisfying a
+later run. Use a unique work directory for every experiment attempt rather than
+reusing or manually cleaning an old run directory.
+
 Validate and exercise the included lightweight backend:
 
 ```bash
@@ -212,7 +220,10 @@ instavar-voice-eval run-lifecycle \
   --work-dir /tmp/instavar-voice-fake-lifecycle
 ```
 
-The lifecycle report records commands, exit codes, logs, artifact hashes, and the fail-closed stage boundary. A passed fake lifecycle proves orchestration and evidence generation only. It does not prove that a real model trains, synthesizes correct speech, or sounds good.
+The lifecycle report records commands, exit codes, timeouts, logs, artifact
+hashes, and the fail-closed stage boundary. A passed fake lifecycle proves
+orchestration and evidence generation only. It does not prove that a real model
+trains, synthesizes correct speech, or sounds good.
 
 ## Test
 
