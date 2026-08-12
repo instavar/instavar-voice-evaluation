@@ -6,6 +6,7 @@ import re
 from statistics import mean, median
 from typing import Any, Iterable
 
+from .attempts import runtime_attempt_is_content_bound
 from .observations import validate_objective_observations
 
 TOKEN_RE = re.compile(r"[\w']+", re.UNICODE)
@@ -207,6 +208,12 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
                 )
             )
             binding = evidence_content_binding.setdefault(kind, {"bound": 0, "unbound": 0})
+            if kind == "runtime":
+                if runtime_attempt_is_content_bound(row, index=index):
+                    binding["bound"] += 1
+                else:
+                    binding["unbound"] += 1
+                return
             input_audio_sha = record.get("input_audio_sha256")
             audio_bound = input_audio_sha is not None
             if audio_bound:

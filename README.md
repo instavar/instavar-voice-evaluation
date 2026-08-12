@@ -19,6 +19,7 @@ The shared layer provides:
 - plan-bound objective metric requirements that reject bilateral metric omission;
 - exact baseline-versus-adapted pairing with extractor-provenance checks and paired bootstrap intervals;
 - content-addressed extractor implementation or model artifacts plus speaker-reference audio and transcript bindings;
+- content-addressed generation-attempt receipts for runtime timing, duration, and memory evidence;
 - exact-versus-derived cross-runtime artifact manifests with live content rechecks;
 - lifecycle-stage and matched-comparison declarations for every supported adaptation path;
 - examples and unit tests for every contract.
@@ -309,6 +310,45 @@ speaker-reference identity observed for ASR, speaker encoding, and runtime
 probes. It counts fully content-bound and unbound evidence for each extractor
 kind. Mixed provenance remains visible in an ordinary score report and is
 rejected by the matched-comparison command.
+
+## Bind runtime metrics to generation attempts
+
+Do not treat timing and peak-memory fields copied into an observation as
+attempt evidence. First build a receipt from the raw generation rows, frozen
+plan, and live output audio. Then apply that receipt without overwriting other
+extractor evidence:
+
+```bash
+instavar-voice-eval build-generation-attempt-receipt \
+  generation-observations.json \
+  --plan generation-plan.json \
+  --audio-base-dir evaluation \
+  --producer-name qwen3-evaluation-runner \
+  --producer-revision "$RUNNER_REVISION" \
+  --output generation-attempt-receipt.json
+
+instavar-voice-eval apply-generation-attempt-receipt \
+  generation-observations.json \
+  generation-attempt-receipt.json \
+  --plan generation-plan.json \
+  --audio-base-dir evaluation \
+  --output observations-with-runtime-evidence.json
+```
+
+The builder requires `generation_seconds` for every attempt. It binds the
+complete generation-side row, the exact planned sample, the complete plan,
+runtime metrics, producer revision, and live output bytes when an output
+exists. Application rechecks the plan and live audio, rejects stale or reused
+receipts, and adds a per-attempt digest plus the receipt digest to
+`evidence.runtime`. Later ASR, speaker, and audio-probe augmentation does not
+change the generation identity.
+
+A version 1.1 plan that requires real-time factor, generation time, audio
+duration, or peak memory rejects unbound runtime evidence. Legacy plans and
+standalone score reports remain readable, but report those rows as unbound.
+The receipt detects accidental or post-hoc substitution of declared fields. It
+does not prove honest measurement, that a process loaded declared model bytes,
+hardware isolation, clock validity, or host trust.
 
 ## Bind extractor results to generated audio
 

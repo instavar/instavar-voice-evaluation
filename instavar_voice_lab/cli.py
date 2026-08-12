@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from .attempts import apply_generation_attempt_receipt, build_generation_attempt_receipt
 from .audio_probe import compare_wav_probes, probe_wav
 from .comparison import compare_matched_candidates, compare_runtime_candidates
 from .contracts import VALIDATORS, validate_document
@@ -177,6 +178,27 @@ def build_parser() -> argparse.ArgumentParser:
     observation_contract.add_argument("--require-version", action="store_true")
     observation_contract.add_argument("--require-seed", action="store_true")
     observation_contract.add_argument("--require-runtime", action="store_true")
+
+    build_attempts = commands.add_parser(
+        "build-generation-attempt-receipt",
+        help="bind runtime measurements to planned rows and live generation outputs",
+    )
+    build_attempts.add_argument("observations", type=Path)
+    build_attempts.add_argument("--plan", type=Path, required=True)
+    build_attempts.add_argument("--audio-base-dir", type=Path, required=True)
+    build_attempts.add_argument("--producer-name", required=True)
+    build_attempts.add_argument("--producer-revision", required=True)
+    build_attempts.add_argument("--output", type=Path, required=True)
+
+    apply_attempts = commands.add_parser(
+        "apply-generation-attempt-receipt",
+        help="immutably add verified runtime-attempt evidence to generation observations",
+    )
+    apply_attempts.add_argument("observations", type=Path)
+    apply_attempts.add_argument("receipt", type=Path)
+    apply_attempts.add_argument("--plan", type=Path, required=True)
+    apply_attempts.add_argument("--audio-base-dir", type=Path, required=True)
+    apply_attempts.add_argument("--output", type=Path, required=True)
 
     audio_probe_results = commands.add_parser(
         "build-audio-probe-results",
@@ -484,6 +506,33 @@ def main(argv: list[str] | None = None) -> int:
                 print(error, file=sys.stderr)
             return 1
         print(f"valid objective observations: {args.observations}")
+        return 0
+    if args.command == "build-generation-attempt-receipt":
+        try:
+            result = build_generation_attempt_receipt(
+                _read_json(args.observations),
+                plan=_read_json(args.plan),
+                audio_base_dir=args.audio_base_dir,
+                producer_name=args.producer_name,
+                producer_revision=args.producer_revision,
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0
+    if args.command == "apply-generation-attempt-receipt":
+        try:
+            result = apply_generation_attempt_receipt(
+                _read_json(args.observations),
+                _read_json(args.receipt),
+                plan=_read_json(args.plan),
+                audio_base_dir=args.audio_base_dir,
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
         return 0
     if args.command == "build-audio-probe-results":
         try:

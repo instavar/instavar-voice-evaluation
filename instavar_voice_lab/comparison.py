@@ -8,6 +8,7 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Any
 
+from .attempts import runtime_attempt_is_content_bound
 from .metrics import bootstrap_mean_interval, score_objective_observations
 from .runtime_artifacts import exact_runtime_binding, verify_runtime_artifact_manifest
 
@@ -52,6 +53,10 @@ CONTENT_BOUND_EVIDENCE = {
     "sample_rate_hz": "audio_probe",
     "silence_fraction": "audio_probe",
     "clipping_fraction": "audio_probe",
+    "real_time_factor": "runtime",
+    "generation_seconds": "runtime",
+    "peak_memory_bytes": "runtime",
+    "audio_duration_seconds": "runtime",
 }
 
 
@@ -237,15 +242,29 @@ def _validate_content_bound_required_metrics(
     row: dict[str, Any],
     required_metrics: list[str],
     index: int,
+    *,
+    generation_plan_sha256: str,
+    planned_sample: dict[str, Any],
 ) -> None:
     required_kinds = {kind for metric in required_metrics if (kind := CONTENT_BOUND_EVIDENCE.get(metric)) is not None}
     if not required_kinds:
         return
     audio_sha = row.get("audio_sha256")
-    if not isinstance(audio_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", audio_sha):
+    if required_kinds - {"runtime"} and (
+        not isinstance(audio_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", audio_sha)
+    ):
         raise ValueError(f"observation {index} must bind required metrics to audio_sha256")
     evidence = row.get("evidence")
     for kind in sorted(required_kinds):
+        if kind == "runtime":
+            if not runtime_attempt_is_content_bound(
+                row,
+                index=index,
+                generation_plan_sha256=generation_plan_sha256,
+                planned_sample=planned_sample,
+            ):
+                raise ValueError(f"observation {index} plan-required runtime metrics must bind a generation attempt")
+            continue
         record = evidence.get(kind) if isinstance(evidence, dict) else None
         if not isinstance(record, dict) or record.get("input_audio_sha256") != audio_sha:
             raise ValueError(f"observation {index} evidence.{kind}.input_audio_sha256 must match audio_sha256")
@@ -321,6 +340,11 @@ def compare_matched_candidates(
     provenance = _provenance(selected)
     scored = score_objective_observations(selected, seed=seed)
     scored_by_id = {sample["sample_id"]: sample for sample in scored["samples"]}
+    planned_by_id = {
+        row["sample_id"]: row
+        for row in plan["samples"]
+        if isinstance(row, dict) and row.get("sample_id") in {item["sample_id"] for item in selected}
+    }
 
     paired_deltas: dict[str, list[float]] = defaultdict(list)
     pair_rows: list[dict[str, Any]] = []
@@ -353,11 +377,15 @@ def compare_matched_candidates(
                 baseline_row,
                 plan_binding["required_objective_metrics"],
                 pair_index * 2,
+                generation_plan_sha256=plan_binding["sha256"],
+                planned_sample=planned_by_id[baseline_row["sample_id"]],
             )
             _validate_content_bound_required_metrics(
                 adapted_row,
                 plan_binding["required_objective_metrics"],
                 pair_index * 2 + 1,
+                generation_plan_sha256=plan_binding["sha256"],
+                planned_sample=planned_by_id[adapted_row["sample_id"]],
             )
         if baseline_valid and adapted_valid and set(baseline_metrics) != set(adapted_metrics):
             missing_adapted = sorted(set(baseline_metrics) - set(adapted_metrics))

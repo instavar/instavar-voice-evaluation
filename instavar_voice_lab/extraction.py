@@ -115,7 +115,7 @@ def _builtin_audio_probe_artifacts() -> dict[str, tuple[Path, str]]:
     return {"implementation": (Path(__file__).with_name("audio_probe.py"), "file")}
 
 
-def _audio_file(row: dict[str, Any], base_dir: Path, index: int) -> tuple[Path, str]:
+def verify_observation_audio(row: dict[str, Any], base_dir: Path, index: int) -> tuple[Path, str]:
     raw_path = row.get("audio_path")
     expected_sha = row.get("audio_sha256")
     if not isinstance(raw_path, str) or not raw_path.strip():
@@ -211,7 +211,7 @@ def build_audio_probe_results(
     for index, row in enumerate(rows):
         if row["valid"] is not True:
             continue
-        path, audio_sha = _audio_file(row, audio_base_dir, index)
+        path, audio_sha = verify_observation_audio(row, audio_base_dir, index)
         result: dict[str, Any] = {
             "sample_id": row["sample_id"],
             "audio_sha256": audio_sha,
@@ -335,7 +335,7 @@ def apply_extractor_results(
 
     output = deepcopy(rows)
     for sample_id, (index, source_row) in valid_rows.items():
-        _, live_sha = _audio_file(source_row, audio_base_dir, index)
+        _, live_sha = verify_observation_audio(source_row, audio_base_dir, index)
         result = result_by_id[sample_id]
         if result.get("audio_sha256") != live_sha:
             raise ValueError(f"extractor result audio_sha256 mismatch for sample_id: {sample_id}")
