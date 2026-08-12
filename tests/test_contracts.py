@@ -40,6 +40,20 @@ class ContractTests(unittest.TestCase):
         errors = validate_document("capability", manifest)
         self.assertTrue(any("unique" in error.message for error in errors))
 
+    def test_runtime_conformance_requires_real_coverage_after_a_run(self) -> None:
+        manifest = load_example("capability-manifest.json")
+        manifest["runtimes"][0]["conformance"]["prompt_count"] = 0
+        errors = validate_document("capability", manifest)
+        self.assertTrue(any(error.path.endswith("prompt_count") for error in errors))
+
+    def test_not_run_runtime_cannot_claim_samples(self) -> None:
+        manifest = load_example("capability-manifest.json")
+        conformance = manifest["runtimes"][0]["conformance"]
+        conformance.update({"status": "not_run", "prompt_count": 1, "seed_count": 1})
+        conformance.pop("report")
+        errors = validate_document("capability", manifest)
+        self.assertTrue(any("zero prompts and seeds" in error.message for error in errors))
+
     def test_evaluation_rejects_composite_score(self) -> None:
         report = load_example("evaluation-report.json")
         report["composite_score"] = 0.91

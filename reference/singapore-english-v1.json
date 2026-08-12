@@ -1,11 +1,12 @@
 {
   "id": "instavar-singapore-english",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "locale": "en-SG",
   "purpose": "Compare identity, Singapore English accent, pronunciation, cadence, long-form stability, and runtime behavior without treating conspicuous Singlish vocabulary as an accent proxy.",
   "reference_durations_seconds": [10, 30, 75],
   "generation": {
     "seeds_per_candidate": 3,
+    "seeds": [42, 314159, 20260812],
     "require_same_transcripts": true,
     "require_frozen_generation_settings": true
   },

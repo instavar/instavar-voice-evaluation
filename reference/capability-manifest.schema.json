@@ -15,7 +15,7 @@
     "known_gaps"
   ],
   "properties": {
-    "schema_version": { "const": "1.0.0" },
+    "schema_version": { "enum": ["1.0.0", "1.1.0"] },
     "repository": {
       "type": "object",
       "additionalProperties": false,
@@ -61,7 +61,13 @@
           },
           "streaming": { "type": "boolean" },
           "evidence": { "$ref": "#/$defs/evidence" },
-          "notes": { "type": "string" }
+          "notes": { "type": "string" },
+          "profile": { "$ref": "#/$defs/runtimeProfile" },
+          "device": { "type": "string", "minLength": 1 },
+          "interface": { "$ref": "#/$defs/runtimeInterface" },
+          "precision": { "type": "string", "minLength": 1 },
+          "batching": { "type": "boolean" },
+          "conformance": { "$ref": "#/$defs/runtimeConformance" }
         }
       }
     },
@@ -108,6 +114,35 @@
       "items": { "type": "string", "minLength": 1 }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "schema_version": { "const": "1.1.0" } },
+        "required": ["schema_version"]
+      },
+      "then": {
+        "properties": {
+          "runtimes": {
+            "items": {
+              "required": [
+                "id",
+                "status",
+                "artifact_mode",
+                "streaming",
+                "evidence",
+                "profile",
+                "device",
+                "interface",
+                "precision",
+                "batching",
+                "conformance"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
@@ -119,6 +154,25 @@
         "unverified_for_adapter",
         "unsupported"
       ]
+    },
+    "runtimeProfile": {
+      "enum": ["reference", "optimized_cuda", "apple_silicon", "cpu_edge", "server", "experimental"]
+    },
+    "runtimeInterface": {
+      "enum": ["python", "cli", "http", "grpc"]
+    },
+    "runtimeConformance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "clean_checkout", "fresh_process", "prompt_count", "seed_count"],
+      "properties": {
+        "status": { "enum": ["not_run", "smoke_tested", "validated", "negative_result"] },
+        "clean_checkout": { "type": "boolean" },
+        "fresh_process": { "type": "boolean" },
+        "prompt_count": { "type": "integer", "minimum": 0 },
+        "seed_count": { "type": "integer", "minimum": 0 },
+        "report": { "type": "string", "minLength": 1 }
+      }
     },
     "evidenceLevel": {
       "enum": [
