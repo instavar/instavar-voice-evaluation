@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .contracts import validate_experiment_manifest
+
 
 STAGES = ("preflight", "train", "infer", "evaluate", "package")
 SENSITIVE_ENV_FRAGMENTS = ("secret", "token", "password", "api_key", "credential")
@@ -51,8 +53,14 @@ def _expand_command(command: list[Any], *, work_dir: Path, stage_result: Path) -
 
 
 def _artifact_record(path: Path, *, root: Path) -> dict[str, Any]:
+    if path.is_symlink():
+        raise ValueError(f"lifecycle artifacts must not be symlinks: {path}")
     if not path.is_file():
         raise FileNotFoundError(f"expected lifecycle artifact not found: {path}")
+    resolved_root = root.resolve()
+    resolved_path = path.resolve()
+    if not resolved_path.is_relative_to(resolved_root):
+        raise ValueError(f"lifecycle artifact escapes the work directory: {path}")
     return {
         "path": str(path.relative_to(root)),
         "sha256": _sha256(path),
@@ -64,8 +72,8 @@ def validate_backend_spec(spec: Any) -> list[str]:
     errors: list[str] = []
     if not isinstance(spec, dict):
         return ["backend spec must be an object"]
-    if spec.get("schema_version") != "1.0.0":
-        errors.append("schema_version must equal 1.0.0")
+    if spec.get("schema_version") not in {"1.0.0", "1.1.0"}:
+        errors.append("schema_version must equal 1.0.0 or 1.1.0")
     if not isinstance(spec.get("backend_id"), str) or not spec["backend_id"].strip():
         errors.append("backend_id must be a non-empty string")
     commands = spec.get("commands")
@@ -80,9 +88,17 @@ def validate_backend_spec(spec: Any) -> list[str]:
     if not isinstance(expected, dict):
         errors.append("expected_artifacts must be an object when present")
     else:
-        for stage, paths in expected.items():
-            if stage not in STAGES or not isinstance(paths, list) or any(not isinstance(path, str) for path in paths):
+        for stage in STAGES:
+            paths = expected.get(stage)
+            if not isinstance(paths, list) or not paths or any(not isinstance(path, str) for path in paths):
                 errors.append(f"expected_artifacts.{stage} must be an array of paths for a known stage")
+                continue
+            if len(paths) != len(set(paths)):
+                errors.append(f"expected_artifacts.{stage} must not contain duplicates")
+            for path_text in paths:
+                artifact_path = Path(path_text)
+                if artifact_path.is_absolute() or ".." in artifact_path.parts:
+                    errors.append(f"expected_artifacts.{stage} contains an unsafe path: {path_text}")
     environment = spec.get("environment", {})
     if not isinstance(environment, dict):
         errors.append("environment must be an object when present")
@@ -92,6 +108,14 @@ def validate_backend_spec(spec: Any) -> list[str]:
                 errors.append(f"environment.{name} looks sensitive and must be supplied outside the spec")
             if not isinstance(value, str):
                 errors.append(f"environment.{name} must be a string")
+    timeouts = spec.get("timeout_seconds", {})
+    if not isinstance(timeouts, dict):
+        errors.append("timeout_seconds must be an object when present")
+    elif spec.get("schema_version") == "1.1.0":
+        for stage in STAGES:
+            timeout = timeouts.get(stage)
+            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+                errors.append(f"timeout_seconds.{stage} must be a positive number")
     return errors
 
 
@@ -101,11 +125,18 @@ def run_lifecycle(spec_path: Path, experiment_path: Path, work_dir: Path) -> dic
     if errors:
         raise ValueError("; ".join(errors))
     experiment = _read_json(experiment_path)
-    experiment_id = str(experiment.get("experiment_id", "")).strip()
-    if not experiment_id:
-        raise ValueError("experiment manifest must contain experiment_id")
+    experiment_errors = validate_experiment_manifest(experiment)
+    if experiment_errors:
+        raise ValueError("invalid experiment manifest: " + "; ".join(str(error) for error in experiment_errors))
+    experiment_id = str(experiment["experiment_id"]).strip()
 
+    if work_dir.is_symlink():
+        raise ValueError(f"lifecycle work directory must not be a symlink: {work_dir}")
     work_dir = work_dir.resolve()
+    if work_dir.exists() and not work_dir.is_dir():
+        raise ValueError(f"lifecycle work directory is not a directory: {work_dir}")
+    if work_dir.exists() and any(work_dir.iterdir()):
+        raise ValueError(f"lifecycle work directory must be empty: {work_dir}")
     work_dir.mkdir(parents=True, exist_ok=True)
     lifecycle_started = _now()
     stage_reports: list[dict[str, Any]] = []
@@ -131,27 +162,52 @@ def run_lifecycle(spec_path: Path, experiment_path: Path, work_dir: Path) -> dic
             }
         )
         started = _now()
+        timeout_seconds = spec.get("timeout_seconds", {}).get(stage, 3600)
+        timed_out = False
+        completed: subprocess.CompletedProcess[str] | None = None
         with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
-            completed = subprocess.run(command, cwd=spec_path.parent, env=environment, stdout=stdout, stderr=stderr, check=False)
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=spec_path.parent,
+                    env=environment,
+                    stdout=stdout,
+                    stderr=stderr,
+                    check=False,
+                    timeout=timeout_seconds,
+                )
+            except subprocess.TimeoutExpired:
+                timed_out = True
         report: dict[str, Any] = {
             "stage": stage,
             "started_at": started,
             "finished_at": _now(),
             "command": command,
-            "exit_code": completed.returncode,
+            "exit_code": None if completed is None else completed.returncode,
+            "timeout_seconds": timeout_seconds,
             "stdout": str(stdout_path.relative_to(work_dir)),
             "stderr": str(stderr_path.relative_to(work_dir)),
             "status": "failed",
             "artifacts": [],
         }
-        if completed.returncode != 0:
+        if timed_out:
+            report["error"] = "backend command exceeded its stage timeout"
+        elif completed is None:
+            report["error"] = "backend command did not return a process result"
+        elif completed.returncode != 0:
             report["error"] = "backend command returned a non-zero exit code"
         elif not stage_result_path.is_file():
             report["error"] = "backend command did not write stage-result.json"
+        elif stage_result_path.is_symlink():
+            report["error"] = "backend stage result must not be a symlink"
         else:
             try:
                 stage_result = _read_json(stage_result_path)
-                if not isinstance(stage_result, dict) or stage_result.get("stage") != stage:
+                if (
+                    not isinstance(stage_result, dict)
+                    or stage_result.get("schema_version") != "1.0.0"
+                    or stage_result.get("stage") != stage
+                ):
                     raise ValueError("stage result must name the active stage")
                 if stage_result.get("status") != "passed":
                     raise ValueError("stage result status must equal passed")
