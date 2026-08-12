@@ -13,6 +13,7 @@ from .metrics import bootstrap_mean_interval
 
 LISTENING_ASSIGNMENT_PLAN_SCHEMA_VERSION = "1.2.0"
 LISTENING_ROUTING_SCHEMA_VERSION = "1.1.0"
+LISTENING_PRESENTATION_SCHEDULE_SCHEMA_VERSION = "1.0.0"
 _ROUTING_SELECTORS = {"all_samples", "categories", "categories_or_lexical_anchors", "lexical_anchors"}
 _CRITERION_DIRECTIONS = {"higher_is_better", "lower_is_better"}
 
@@ -267,6 +268,255 @@ def validate_listening_assignment_plan(
     }
 
 
+def _presentation_schedule_audit(
+    schedules: list[dict[str, Any]],
+    reveal_rows: Any,
+    *,
+    seed: Any,
+) -> dict[str, Any]:
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError("counterbalance audit seed must be a non-negative integer")
+    if not isinstance(schedules, list) or not schedules:
+        raise ValueError("counterbalance audit schedules must be a non-empty array")
+    if not isinstance(reveal_rows, list) or not reveal_rows:
+        raise ValueError("counterbalance audit mapping must be a non-empty array")
+    mapping: dict[str, tuple[tuple[str, int], str]] = {}
+    groups: dict[tuple[str, int], set[str]] = defaultdict(set)
+    for index, row in enumerate(reveal_rows):
+        if not isinstance(row, dict):
+            raise ValueError(f"counterbalance audit mapping row {index} must be an object")
+        seed_value = row.get("seed")
+        candidate_id = str(row.get("candidate_id", "")).strip()
+        prompt_id = str(row.get("prompt_id", "")).strip()
+        blind_id = str(row.get("blind_id", "")).strip()
+        if (
+            isinstance(seed_value, bool)
+            or not isinstance(seed_value, int)
+            or seed_value < 0
+            or not candidate_id
+            or not prompt_id
+            or not blind_id
+            or blind_id in mapping
+        ):
+            raise ValueError(f"counterbalance audit mapping row {index} is invalid")
+        key = (prompt_id, seed_value)
+        mapping[blind_id] = (key, candidate_id)
+        if candidate_id in groups[key]:
+            raise ValueError(f"counterbalance audit repeats candidate for {prompt_id}/{seed_value}")
+        groups[key].add(candidate_id)
+    candidates = sorted({candidate_id for _, candidate_id in mapping.values()})
+    block_keys = sorted(groups)
+    if len(candidates) < 2 or not block_keys:
+        raise ValueError("counterbalance audit requires at least two candidates and one prompt-seed block")
+    if any(groups[key] != set(candidates) for key in block_keys):
+        raise ValueError("counterbalance audit requires symmetric candidate coverage")
+    block_count = len(block_keys)
+    candidate_count = len(candidates)
+    position_counts = {
+        key: {candidate_id: [0] * candidate_count for candidate_id in candidates} for key in block_keys
+    }
+    rater_pass_rows: list[dict[str, Any]] = []
+    separations: list[int] = []
+    for schedule_index, schedule in enumerate(schedules):
+        if not isinstance(schedule, dict):
+            raise ValueError(f"counterbalance audit schedule {schedule_index} must be an object")
+        sample_order = schedule.get("sample_order")
+        if not isinstance(sample_order, list) or len(sample_order) != len(mapping) or set(sample_order) != set(mapping):
+            raise ValueError(f"counterbalance audit schedule {schedule_index} must cover every mapped sample")
+        pass_counts = {candidate_id: [0] * candidate_count for candidate_id in candidates}
+        keys_by_pass = [set() for _ in candidates]
+        positions_by_key: dict[tuple[str, int], list[int]] = defaultdict(list)
+        for absolute_position, blind_id in enumerate(sample_order):
+            if blind_id not in mapping:
+                raise ValueError(f"counterbalance audit schedule {schedule_index} contains an unknown blind id")
+            candidate_position = absolute_position // block_count
+            if candidate_position >= candidate_count:
+                raise ValueError(f"counterbalance audit schedule {schedule_index} has too many listening passes")
+            key, candidate_id = mapping[blind_id]
+            if key in keys_by_pass[candidate_position]:
+                raise ValueError(f"counterbalance audit schedule {schedule_index} repeats a prompt block in one pass")
+            keys_by_pass[candidate_position].add(key)
+            position_counts[key][candidate_id][candidate_position] += 1
+            pass_counts[candidate_id][candidate_position] += 1
+            positions_by_key[key].append(absolute_position)
+        if any(keys != set(block_keys) for keys in keys_by_pass):
+            raise ValueError(f"counterbalance audit schedule {schedule_index} does not cover every block in each pass")
+        for key in block_keys:
+            positions = sorted(positions_by_key[key])
+            if len(positions) != candidate_count:
+                raise ValueError(f"counterbalance audit schedule {schedule_index} has incomplete matched candidates")
+            separations.extend(right - left for left, right in zip(positions, positions[1:]))
+        rater_pass_rows.append(
+            {"rater_id": schedule["rater_id"], "candidate_pass_counts": pass_counts}
+        )
+
+    position_rows = []
+    imbalances: list[int] = []
+    for prompt_id, seed_value in block_keys:
+        counts = position_counts[(prompt_id, seed_value)]
+        position_rows.append(
+            {"prompt_id": prompt_id, "seed": seed_value, "candidate_position_counts": counts}
+        )
+        imbalances.extend(max(counts[candidate_id]) - min(counts[candidate_id]) for candidate_id in candidates)
+    max_imbalance = max(imbalances, default=0)
+    pass_imbalances = [
+        max(counts) - min(counts)
+        for row in rater_pass_rows
+        for counts in row["candidate_pass_counts"].values()
+    ]
+    max_pass_imbalance = max(pass_imbalances, default=0)
+    if max_imbalance > 1 or max_pass_imbalance > 1:
+        raise ValueError("counterbalance audit imbalance exceeds one")
+    return {
+        "schema_version": LISTENING_PRESENTATION_SCHEDULE_SCHEMA_VERSION,
+        "method": "interleaved_prompt_seed_blocks_with_cyclic_candidate_precedence",
+        "schedule_seed": seed,
+        "rater_count": len(schedules),
+        "candidate_count": candidate_count,
+        "prompt_seed_count": block_count,
+        "max_candidate_position_imbalance": max_imbalance,
+        "max_candidate_pass_imbalance": max_pass_imbalance,
+        "master_order_matched_candidate_minimum_separation": min(separations, default=0),
+        "status": "passed",
+        "candidate_position_counts": position_rows,
+        "rater_candidate_pass_counts": rater_pass_rows,
+        "evidence_boundary": (
+            "The audit balances candidate precedence within each prompt and seed and candidate exposure across each "
+            "rater's listening passes to within one. It does not eliminate sequence, learning, fatigue, or carryover "
+            "effects or prove that reviewers followed the schedule."
+        ),
+    }
+
+
+def _counterbalanced_presentation_schedules(
+    review_rows: list[dict[str, Any]],
+    reveal_rows: list[dict[str, Any]],
+    criteria: list[str],
+    rater_ids: list[str],
+    *,
+    seed: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if (
+        not isinstance(rater_ids, list)
+        or not rater_ids
+        or any(not isinstance(value, str) or not value.strip() for value in rater_ids)
+    ):
+        raise ValueError("rater_ids must be a non-empty array of non-empty strings")
+    normalized_raters = sorted(value.strip() for value in rater_ids)
+    if len(set(normalized_raters)) != len(normalized_raters):
+        raise ValueError("rater_ids must be unique")
+
+    review_by_id = {row["blind_id"]: row for row in review_rows}
+    groups: dict[tuple[str, int], dict[str, str]] = defaultdict(dict)
+    candidate_ids: set[str] = set()
+    for index, row in enumerate(reveal_rows):
+        seed_value = row.get("seed")
+        if isinstance(seed_value, bool) or not isinstance(seed_value, int) or seed_value < 0:
+            raise ValueError(f"counterbalanced sample {index} must contain a non-negative seed")
+        candidate_id = str(row.get("candidate_id", "")).strip()
+        prompt_id = str(row.get("prompt_id", "")).strip()
+        blind_id = str(row.get("blind_id", "")).strip()
+        if not candidate_id or not prompt_id or blind_id not in review_by_id:
+            raise ValueError(f"counterbalanced sample {index} contains an unknown or empty identifier")
+        key = (prompt_id, seed_value)
+        if candidate_id in groups[key]:
+            raise ValueError(
+                f"counterbalanced prompt and seed repeats candidate {candidate_id}: {prompt_id}/{seed_value}"
+            )
+        groups[key][candidate_id] = blind_id
+        candidate_ids.add(candidate_id)
+
+    candidates = sorted(candidate_ids)
+    if len(candidates) < 2:
+        raise ValueError("counterbalanced presentation requires at least two candidates")
+    expected_candidates = set(candidates)
+    for prompt_id, seed_value in sorted(groups):
+        if set(groups[(prompt_id, seed_value)]) != expected_candidates:
+            raise ValueError(
+                f"counterbalanced presentation requires symmetric candidates for {prompt_id}/{seed_value}"
+            )
+
+    block_keys = sorted(groups)
+    stable_block_indexes = {key: index for index, key in enumerate(block_keys)}
+    schedules: list[dict[str, Any]] = []
+    all_blind_ids = set(review_by_id)
+    for rater_index, rater_id in enumerate(normalized_raters):
+        rater_blocks = list(block_keys)
+        rater_seed = int(_digest({"schedule_seed": seed, "rater_id": rater_id})[:16], 16)
+        random.Random(rater_seed).shuffle(rater_blocks)
+        sample_order: list[str] = []
+        for candidate_position in range(len(candidates)):
+            for key in rater_blocks:
+                candidate_index = (candidate_position + rater_index + stable_block_indexes[key]) % len(candidates)
+                candidate_id = candidates[candidate_index]
+                sample_order.append(groups[key][candidate_id])
+        if len(sample_order) != len(all_blind_ids) or set(sample_order) != all_blind_ids:
+            raise ValueError(f"counterbalanced presentation does not cover every sample for rater {rater_id}")
+        criterion_orders = {
+            criterion: [
+                blind_id for blind_id in sample_order if criterion in review_by_id[blind_id].get("criteria", criteria)
+            ]
+            for criterion in criteria
+        }
+        schedule_payload = {
+            "rater_id": rater_id,
+            "sample_order": sample_order,
+            "criterion_orders": criterion_orders,
+        }
+        schedules.append({**schedule_payload, "schedule_sha256": _digest(schedule_payload)})
+    audit = _presentation_schedule_audit(schedules, reveal_rows, seed=seed)
+    return schedules, audit
+
+
+def _validate_presentation_schedules(
+    review: dict[str, Any], criteria: list[str], review_rows: list[dict[str, Any]]
+) -> set[str] | None:
+    raw_schedules = review.get("presentation_schedules")
+    if raw_schedules is None:
+        return None
+    if review.get("presentation_schedule_schema_version") != LISTENING_PRESENTATION_SCHEDULE_SCHEMA_VERSION:
+        raise ValueError(
+            "review presentation_schedule_schema_version must equal "
+            f"{LISTENING_PRESENTATION_SCHEDULE_SCHEMA_VERSION}"
+        )
+    if not isinstance(raw_schedules, list) or not raw_schedules:
+        raise ValueError("review presentation_schedules must be a non-empty array")
+    review_by_id = {row["blind_id"]: row for row in review_rows}
+    expected_blind_ids = set(review_by_id)
+    scheduled_raters: set[str] = set()
+    for index, schedule in enumerate(raw_schedules):
+        if not isinstance(schedule, dict):
+            raise ValueError(f"review presentation schedule {index} must be an object")
+        rater_id = schedule.get("rater_id")
+        if not isinstance(rater_id, str) or not rater_id.strip() or rater_id in scheduled_raters:
+            raise ValueError(f"review presentation schedule {index} has an empty or duplicate rater_id")
+        scheduled_raters.add(rater_id)
+        payload = {key: value for key, value in schedule.items() if key != "schedule_sha256"}
+        if schedule.get("schedule_sha256") != _digest(payload):
+            raise ValueError(f"review presentation schedule {index} self-hash does not match its content")
+        sample_order = schedule.get("sample_order")
+        if (
+            not isinstance(sample_order, list)
+            or len(sample_order) != len(expected_blind_ids)
+            or set(sample_order) != expected_blind_ids
+        ):
+            raise ValueError(f"review presentation schedule {index} must cover every blind sample exactly once")
+        criterion_orders = schedule.get("criterion_orders")
+        if not isinstance(criterion_orders, dict) or set(criterion_orders) != set(criteria):
+            raise ValueError(f"review presentation schedule {index} criterion_orders must cover every criterion")
+        for criterion in criteria:
+            expected_order = [
+                blind_id
+                for blind_id in sample_order
+                if criterion in review_by_id[blind_id].get("criteria", criteria)
+            ]
+            if criterion_orders[criterion] != expected_order:
+                raise ValueError(
+                    f"review presentation schedule {index} criterion order does not match assigned samples: {criterion}"
+                )
+    return scheduled_raters
+
+
 def build_blind_pack(
     samples: list[dict[str, Any]],
     criteria: list[str] | None,
@@ -274,6 +524,7 @@ def build_blind_pack(
     seed: int,
     assignment_plan: dict[str, Any] | None = None,
     generation_plan: dict[str, Any] | None = None,
+    rater_ids: list[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if len(samples) < 2:
         raise ValueError("at least two samples are required")
@@ -300,6 +551,8 @@ def build_blind_pack(
                 if sample.get(field) != row[field]:
                     raise ValueError(f"blind-review sample {sample_id} does not match assignment field {field}")
             criteria_by_sample[sample_id] = list(row["criteria"])
+    elif rater_ids is not None:
+        raise ValueError("assignment_plan is required with rater_ids")
     if not criteria or any(not isinstance(value, str) or not value.strip() for value in criteria):
         raise ValueError("criteria must contain non-empty strings")
     if len(set(criteria)) != len(criteria):
@@ -357,12 +610,36 @@ def build_blind_pack(
             "Rate only the criteria assigned to each sample, one criterion at a time. Review only the blind_audio "
             "paths and do not open the reveal mapping until every assigned rating is recorded."
         )
+    counterbalance_audit: dict[str, Any] | None = None
+    if rater_ids is not None:
+        schedules, counterbalance_audit = _counterbalanced_presentation_schedules(
+            blind_rows,
+            reveal_rows,
+            criteria,
+            rater_ids,
+            seed=seed,
+        )
+        review["schema_version"] = "1.1.0"
+        review["presentation_schedule_schema_version"] = LISTENING_PRESENTATION_SCHEDULE_SCHEMA_VERSION
+        review["presentation_schedules"] = schedules
+        review["counterbalance_audit_sha256"] = _digest(counterbalance_audit)
+        review["presentation_boundary"] = (
+            "Schedules use pseudonymous rater ids and blind ids only. They counterbalance candidate precedence but "
+            "cannot prove reviewer compliance or eliminate all order and carryover effects."
+        )
+        review["instructions"] = (
+            "Use only the presentation schedule for your assigned pseudonymous rater id. Rate one criterion at a "
+            "time in its criterion_orders sequence. Review only blind_audio paths and do not open the reveal mapping "
+            "until every assigned rating is recorded."
+        )
     reveal = {
         "schema_version": "1.0.0",
         "seed": seed,
         "review_sha256": _digest(review),
         "mapping": reveal_rows,
     }
+    if counterbalance_audit is not None:
+        reveal["counterbalance_audit"] = counterbalance_audit
     return review, reveal
 
 
@@ -533,6 +810,21 @@ def aggregate_listening_results(
         raise ValueError("review document samples must have unique blind ids")
     if set(mapping) != review_blind_ids:
         raise ValueError("reveal mapping must cover every blind sample exactly once")
+    scheduled_rater_ids = _validate_presentation_schedules(review, criteria, review_rows)
+    if scheduled_rater_ids is not None:
+        counterbalance_audit = reveal.get("counterbalance_audit")
+        expected_audit = _presentation_schedule_audit(
+            review["presentation_schedules"],
+            reveal.get("mapping", []),
+            seed=reveal.get("seed"),
+        )
+        if (
+            not isinstance(counterbalance_audit, dict)
+            or review.get("counterbalance_audit_sha256") != _digest(counterbalance_audit)
+            or counterbalance_audit.get("status") != "passed"
+            or counterbalance_audit != expected_audit
+        ):
+            raise ValueError("reveal counterbalance audit does not match the review document")
     criteria_by_blind: dict[str, list[str]] = {}
     for index, row in enumerate(review_rows):
         assigned = row.get("criteria", criteria)
@@ -583,6 +875,8 @@ def aggregate_listening_results(
             raise ValueError(f"ratings contain undeclared raters: {', '.join(unexpected_raters)}")
     else:
         expected_rater_ids = set(rater_ids)
+    if scheduled_rater_ids is not None and expected_rater_ids != scheduled_rater_ids:
+        raise ValueError("ratings expected_rater_ids must exactly match the review presentation schedules")
 
     expected_keys = {
         (rater_id, blind_id, criterion)
@@ -638,6 +932,11 @@ def aggregate_listening_results(
         "revealed": True,
         "rating_scale": {"min": minimum, "max": maximum},
         "criterion_definitions": [criterion_definitions[criterion] for criterion in criteria],
+        "presentation": {
+            "mode": "counterbalanced_per_rater" if scheduled_rater_ids is not None else "shared_global_order",
+            "scheduled_rater_count": len(scheduled_rater_ids or set()),
+            "counterbalance_audit_sha256": review.get("counterbalance_audit_sha256"),
+        },
         "rater_count": len(rater_ids),
         "expected_rater_count": len(expected_rater_ids),
         "rating_count": len(ratings),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import unittest
 from pathlib import Path
@@ -196,6 +197,195 @@ class ListeningPackTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "criterion not assigned"):
             aggregate_listening_results(review, reveal, ratings)
 
+    def test_builds_deterministic_counterbalanced_rater_schedules(self) -> None:
+        generation_plan = self.generation_plan()
+        assignment_plan = build_listening_assignment_plan(generation_plan, self.routing())
+        samples = [
+            {
+                "sample_id": row["sample_id"],
+                "candidate_id": row["candidate_id"],
+                "prompt_id": row["prompt_id"],
+                "seed": row["seed"],
+                "audio_path": f"{row['sample_id']}.wav",
+            }
+            for row in generation_plan["samples"]
+        ]
+        first = build_blind_pack(
+            samples,
+            None,
+            seed=42,
+            assignment_plan=assignment_plan,
+            generation_plan=generation_plan,
+            rater_ids=["rater-b", "rater-a"],
+        )
+        second = build_blind_pack(
+            samples,
+            None,
+            seed=42,
+            assignment_plan=assignment_plan,
+            generation_plan=generation_plan,
+            rater_ids=["rater-a", "rater-b"],
+        )
+        self.assertEqual(first, second)
+        review, reveal = first
+        self.assertEqual(review["schema_version"], "1.1.0")
+        schedules = review["presentation_schedules"]
+        self.assertEqual([row["rater_id"] for row in schedules], ["rater-a", "rater-b"])
+        self.assertNotEqual(schedules[0]["sample_order"], schedules[1]["sample_order"])
+        blind_ids = {row["blind_id"] for row in review["samples"]}
+        criteria_by_id = {row["blind_id"]: row["criteria"] for row in review["samples"]}
+        for schedule in schedules:
+            self.assertEqual(set(schedule["sample_order"]), blind_ids)
+            self.assertEqual(len(schedule["sample_order"]), len(blind_ids))
+            for criterion, order in schedule["criterion_orders"].items():
+                expected = [blind_id for blind_id in schedule["sample_order"] if criterion in criteria_by_id[blind_id]]
+                self.assertEqual(order, expected)
+        audit = reveal["counterbalance_audit"]
+        self.assertEqual(audit["status"], "passed")
+        self.assertEqual(audit["max_candidate_position_imbalance"], 0)
+        self.assertEqual(audit["max_candidate_pass_imbalance"], 1)
+        self.assertEqual(audit["master_order_matched_candidate_minimum_separation"], 3)
+        for row in audit["candidate_position_counts"]:
+            self.assertTrue(all(counts == [1, 1] for counts in row["candidate_position_counts"].values()))
+        for row in audit["rater_candidate_pass_counts"]:
+            self.assertTrue(all(max(counts) - min(counts) <= 1 for counts in row["candidate_pass_counts"].values()))
+        self.assertNotIn("candidate_id", str(review))
+        self.assertNotIn("source_audio_path", str(review))
+
+    def test_counterbalanced_schedules_reject_ood_inputs_and_rater_drift(self) -> None:
+        generation_plan = self.generation_plan()
+        assignment_plan = build_listening_assignment_plan(generation_plan, self.routing())
+        samples = [
+            {
+                "sample_id": row["sample_id"],
+                "candidate_id": row["candidate_id"],
+                "prompt_id": row["prompt_id"],
+                "seed": row["seed"],
+                "audio_path": f"{row['sample_id']}.wav",
+            }
+            for row in generation_plan["samples"]
+        ]
+        for malformed in ([], ["rater", "rater"], [" "], {"rater": "a"}):
+            with self.subTest(rater_ids=malformed), self.assertRaisesRegex(ValueError, "rater_ids must"):
+                build_blind_pack(
+                    samples,
+                    None,
+                    seed=42,
+                    assignment_plan=assignment_plan,
+                    generation_plan=generation_plan,
+                    rater_ids=malformed,
+                )
+        with self.assertRaisesRegex(ValueError, "assignment_plan is required with rater_ids"):
+            build_blind_pack(samples[:2], ["identity"], seed=42, rater_ids=["rater"])
+
+        review, reveal = build_blind_pack(
+            samples,
+            None,
+            seed=42,
+            assignment_plan=assignment_plan,
+            generation_plan=generation_plan,
+            rater_ids=["rater-a", "rater-b"],
+        )
+        tampered_reveal = json.loads(json.dumps(reveal))
+        tampered_reveal["counterbalance_audit"]["status"] = "failed"
+        empty_ratings = {
+            "scale": {"min": 1, "max": 5},
+            "expected_rater_ids": ["rater-a", "rater-b"],
+            "ratings": [],
+        }
+        with self.assertRaisesRegex(ValueError, "counterbalance audit does not match"):
+            aggregate_listening_results(review, tampered_reveal, empty_ratings)
+
+        forged_review = json.loads(json.dumps(review))
+        forged_reveal = json.loads(json.dumps(reveal))
+        forged_reveal["counterbalance_audit"]["max_candidate_pass_imbalance"] = 0
+        canonical_audit = json.dumps(
+            forged_reveal["counterbalance_audit"],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        forged_review["counterbalance_audit_sha256"] = hashlib.sha256(canonical_audit).hexdigest()
+        canonical_review = json.dumps(
+            forged_review,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        forged_reveal["review_sha256"] = hashlib.sha256(canonical_review).hexdigest()
+        with self.assertRaisesRegex(ValueError, "counterbalance audit does not match"):
+            aggregate_listening_results(forged_review, forged_reveal, empty_ratings)
+
+        ratings = {
+            "scale": {"min": 1, "max": 5},
+            "expected_rater_ids": ["rater-a", "rater-c"],
+            "ratings": [
+                {
+                    "rater_id": rater_id,
+                    "blind_id": row["blind_id"],
+                    "criterion": criterion,
+                    "score": 3,
+                }
+                for rater_id in ("rater-a", "rater-c")
+                for row in review["samples"]
+                for criterion in row["criteria"]
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "exactly match the review presentation schedules"):
+            aggregate_listening_results(review, reveal, ratings)
+
+        ratings["expected_rater_ids"] = ["rater-a", "rater-b"]
+        ratings["ratings"] = [
+            {
+                "rater_id": rater_id,
+                "blind_id": row["blind_id"],
+                "criterion": criterion,
+                "score": 3,
+            }
+            for rater_id in ("rater-a", "rater-b")
+            for row in review["samples"]
+            for criterion in row["criteria"]
+        ]
+        result = aggregate_listening_results(review, reveal, ratings)
+        self.assertEqual(result["presentation"]["mode"], "counterbalanced_per_rater")
+        self.assertEqual(result["presentation"]["scheduled_rater_count"], 2)
+
+    def test_counterbalancing_generalizes_to_three_candidates(self) -> None:
+        generation_plan = self.generation_plan()
+        third_candidate = []
+        for row in generation_plan["samples"][:3]:
+            clone = dict(row)
+            clone["candidate_id"] = "challenger"
+            clone["sample_id"] = row["sample_id"].replace("base--", "challenger--")
+            third_candidate.append(clone)
+        generation_plan["samples"].extend(third_candidate)
+        assignment_plan = build_listening_assignment_plan(generation_plan, self.routing())
+        samples = [
+            {
+                "sample_id": row["sample_id"],
+                "candidate_id": row["candidate_id"],
+                "prompt_id": row["prompt_id"],
+                "seed": row["seed"],
+                "audio_path": f"{row['sample_id']}.wav",
+            }
+            for row in generation_plan["samples"]
+        ]
+        review, reveal = build_blind_pack(
+            samples,
+            None,
+            seed=42,
+            assignment_plan=assignment_plan,
+            generation_plan=generation_plan,
+            rater_ids=["rater-c", "rater-a", "rater-b"],
+        )
+        self.assertEqual(len(review["presentation_schedules"]), 3)
+        audit = reveal["counterbalance_audit"]
+        self.assertEqual(audit["candidate_count"], 3)
+        self.assertEqual(audit["max_candidate_position_imbalance"], 0)
+        self.assertEqual(audit["max_candidate_pass_imbalance"], 0)
+        for row in audit["candidate_position_counts"]:
+            self.assertTrue(all(counts == [1, 1, 1] for counts in row["candidate_position_counts"].values()))
+
     def test_assignment_plan_rejects_tampering_and_ood_routing(self) -> None:
         generation_plan = self.generation_plan()
         plan = build_listening_assignment_plan(generation_plan, self.routing())
@@ -281,6 +471,7 @@ class ListeningPackTests(unittest.TestCase):
             routing_path = root / "routing.json"
             assignments_path = root / "assignments.json"
             samples_path = root / "samples.json"
+            rater_ids_path = root / "rater-ids.json"
             review_path = root / "review.json"
             reveal_path = root / "reveal.json"
             plan_path.write_text(json.dumps(generation_plan), encoding="utf-8")
@@ -309,6 +500,7 @@ class ListeningPackTests(unittest.TestCase):
                 for row in generation_plan["samples"]
             ]
             samples_path.write_text(json.dumps(samples), encoding="utf-8")
+            rater_ids_path.write_text(json.dumps(["rater-b", "rater-a"]), encoding="utf-8")
             self.assertEqual(
                 main(
                     [
@@ -318,6 +510,8 @@ class ListeningPackTests(unittest.TestCase):
                         str(assignments_path),
                         "--generation-plan",
                         str(plan_path),
+                        "--rater-ids",
+                        str(rater_ids_path),
                         "--review-output",
                         str(review_path),
                         "--reveal-output",
@@ -330,6 +524,10 @@ class ListeningPackTests(unittest.TestCase):
             )
             review = json.loads(review_path.read_text(encoding="utf-8"))
             self.assertTrue(all({"criteria", "stimulus"} <= row.keys() for row in review["samples"]))
+            self.assertEqual(
+                [row["rater_id"] for row in review["presentation_schedules"]],
+                ["rater-a", "rater-b"],
+            )
 
     def test_rejects_incomplete_rating_matrix_by_default(self) -> None:
         samples = [

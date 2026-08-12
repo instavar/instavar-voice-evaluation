@@ -194,6 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
     blind.add_argument("--criteria", type=Path, help="JSON array of criterion names for legacy all-sample routing")
     blind.add_argument("--assignment-plan", type=Path, help="preregistered plan-bound listening assignments")
     blind.add_argument("--generation-plan", type=Path, help="generation plan bound by --assignment-plan")
+    blind.add_argument("--rater-ids", type=Path, help="JSON array of pseudonymous rater ids for counterbalancing")
     blind.add_argument("--review-output", type=Path, required=True)
     blind.add_argument("--reveal-output", type=Path, required=True)
     blind.add_argument("--seed", type=int, required=True)
@@ -628,6 +629,7 @@ def main(argv: list[str] | None = None) -> int:
             criteria = _read_json(args.criteria) if args.criteria else None
             assignment_plan = _read_json(args.assignment_plan) if args.assignment_plan else None
             generation_plan = _read_json(args.generation_plan) if args.generation_plan else None
+            rater_ids = _read_json(args.rater_ids) if args.rater_ids else None
             if not isinstance(samples, list):
                 raise ValueError("samples must be a JSON array")
             normalized_samples = []
@@ -646,6 +648,7 @@ def main(argv: list[str] | None = None) -> int:
                 seed=args.seed,
                 assignment_plan=assignment_plan,
                 generation_plan=generation_plan,
+                rater_ids=rater_ids,
             )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             print(error, file=sys.stderr)

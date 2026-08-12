@@ -285,13 +285,16 @@ Prepare a JSON array containing `sample_id`, `candidate_id`, `prompt_id`,
 instavar-voice-eval build-listening-pack samples.json \
   --assignment-plan evaluation/listening-assignment-plan.json \
   --generation-plan evaluation/generation-plan.json \
+  --rater-ids evaluation/pseudonymous-rater-ids.json \
   --review-output listening-review.json \
   --reveal-output reveal-mapping.json \
   --stage-root evaluation/listening \
   --seed 20260812
 ```
 
-The review file contains no candidate identifiers or source filenames. Each
+The rater file is a JSON array such as `["rater-001", "rater-002"]`. Use
+stable pseudonyms rather than names or email addresses. The review file contains
+no candidate identifiers or source filenames. Each
 blind sample lists its generation-plan-bound stimulus and assigned criteria, so
 a reviewer can judge exact wording and instruction obedience without consulting
 an uncontrolled external prompt file. A visible lexical target does not
@@ -306,6 +309,23 @@ ratings are recorded. File staging does not strip embedded audio metadata, so
 inspect or normalize metadata separately if the source format can carry
 identity-bearing tags. The builder rejects mixed audio extensions because a
 format difference can itself reveal which runtime produced a sample.
+
+With `--rater-ids`, the review also contains a deterministic schedule for each
+rater. The scheduler randomizes prompt-and-seed block order per rater, separates
+matched candidates into interleaved passes, and rotates candidate precedence
+within every prompt and seed. Its private reveal audit requires every candidate
+to occupy each within-prompt position with a count difference no larger than
+one. Criterion-specific orders preserve the same master sequence while omitting
+samples that were not assigned to that criterion. Aggregation requires
+`expected_rater_ids` to match the scheduled pseudonyms exactly. Aggregation also
+recomputes the counterbalance audit from the schedules and private reveal
+mapping, so replacing the audit counts and refreshing their hashes is rejected.
+
+Counterbalancing reduces systematic candidate-order confounding. It does not
+eliminate sequence, learning, fatigue, or carryover effects, validate the number
+of raters, or prove that reviewers followed their assigned schedules. A study
+coordinator must distribute the correct schedule and retain the reveal file
+outside the review surface.
 
 For compatibility with an older study that intentionally assigned every
 criterion to every sample, omit the two plan options and pass
