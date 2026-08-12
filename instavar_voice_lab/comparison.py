@@ -11,6 +11,10 @@ from typing import Any
 from .attempts import runtime_attempt_is_content_bound
 from .metrics import bootstrap_mean_interval, score_objective_observations
 from .runtime_artifacts import exact_runtime_binding, verify_runtime_artifact_manifest
+from .speaker_reference_plans import (
+    speaker_reference_assignment_sha256,
+    validate_speaker_reference_assignment_plan,
+)
 from .speaker_references import speaker_measurement_is_content_bound, validate_speaker_reference_evidence
 
 METRIC_DIRECTIONS = {
@@ -161,7 +165,7 @@ def _evidence_signature(
     row: dict[str, Any],
     kind: str,
     index: int,
-) -> tuple[str, str, str, str, str, str, str] | None:
+) -> tuple[str, str, str, str, str, str, str, str] | None:
     evidence = row.get("evidence")
     if not isinstance(evidence, dict) or kind not in evidence:
         return None
@@ -190,6 +194,7 @@ def _evidence_signature(
         reference_audio_sha = reference_binding["reference_audio_sha256"]
         reference_transcript_sha = reference_binding["reference_transcript_sha256"]
         reference_aggregation = reference_binding["aggregation"]
+        reference_catalog_sha = reference_binding.get("reference_catalog_sha256")
     elif any(
         record.get(field) is not None
         for field in (
@@ -199,6 +204,9 @@ def _evidence_signature(
             "reference_aggregation",
             "reference_set_sha256",
             "references",
+            "reference_catalog_sha256",
+            "reference_assignment_plan_sha256",
+            "reference_assignment_sha256",
         )
     ):
         raise ValueError(f"observation {index} evidence.{kind} must not declare a speaker reference")
@@ -207,6 +215,7 @@ def _evidence_signature(
         reference_audio_sha = None
         reference_transcript_sha = None
         reference_aggregation = None
+        reference_catalog_sha = None
     return (
         extractor.strip(),
         revision.strip(),
@@ -215,11 +224,12 @@ def _evidence_signature(
         reference_audio_sha or "",
         reference_transcript_sha or "",
         reference_aggregation or "",
+        reference_catalog_sha or "",
     )
 
 
 def _provenance(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    by_kind: dict[str, set[tuple[str, str, str, str, str, str, str]]] = defaultdict(set)
+    by_kind: dict[str, set[tuple[str, str, str, str, str, str, str, str]]] = defaultdict(set)
     for index, row in enumerate(rows):
         for kind in set(METRIC_EVIDENCE_KINDS.values()):
             signature = _evidence_signature(row, kind, index)
@@ -242,6 +252,7 @@ def _provenance(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             "reference_audio_sha256": next(iter(signatures))[4] or None,
             "reference_transcript_sha256": next(iter(signatures))[5] or None,
             "reference_aggregation": next(iter(signatures))[6] or None,
+            "reference_catalog_sha256": next(iter(signatures))[7] or None,
         }
         for kind, signatures in sorted(by_kind.items())
         if signatures
@@ -255,6 +266,7 @@ def _validate_content_bound_required_metrics(
     *,
     generation_plan_sha256: str,
     planned_sample: dict[str, Any],
+    speaker_reference_plan: dict[str, Any] | None,
 ) -> None:
     required_kinds = {kind for metric in required_metrics if (kind := CONTENT_BOUND_EVIDENCE.get(metric)) is not None}
     if not required_kinds:
@@ -292,6 +304,37 @@ def _validate_content_bound_required_metrics(
                 raise ValueError(
                     f"observation {index} plan-required speaker metrics must bind a content-addressed reference set"
                 )
+            if speaker_reference_plan is None:
+                raise ValueError(
+                    f"observation {index} plan-required speaker metrics must bind a frozen reference assignment plan"
+                )
+            assignment_key = (planned_sample.get("prompt_id"), planned_sample.get("seed"))
+            expected_reference_ids = speaker_reference_plan["assignments"].get(assignment_key)
+            if expected_reference_ids is None:
+                raise ValueError(f"observation {index} has no frozen speaker reference assignment")
+            observed_reference_ids = [item["reference_id"] for item in reference_binding["references"]]
+            if observed_reference_ids != expected_reference_ids:
+                raise ValueError(
+                    f"observation {index} speaker reference set does not match the frozen assignment plan"
+                )
+            if reference_binding["reference_catalog_sha256"] != speaker_reference_plan["reference_catalog_sha256"]:
+                raise ValueError(
+                    f"observation {index} speaker reference catalog does not match the frozen assignment plan"
+                )
+            if reference_binding["reference_assignment_plan_sha256"] != speaker_reference_plan["sha256"]:
+                raise ValueError(
+                    f"observation {index} speaker evidence does not bind the frozen reference assignment plan"
+                )
+            expected_assignment_sha = speaker_reference_assignment_sha256(
+                assignment_plan_sha256=speaker_reference_plan["sha256"],
+                prompt_id=planned_sample["prompt_id"],
+                seed=planned_sample["seed"],
+                reference_ids=expected_reference_ids,
+            )
+            if reference_binding["reference_assignment_sha256"] != expected_assignment_sha:
+                raise ValueError(
+                    f"observation {index} speaker evidence does not bind its frozen reference assignment"
+                )
             if not speaker_measurement_is_content_bound(
                 row,
                 record,
@@ -306,7 +349,7 @@ def _matched_speaker_reference_set(
     *,
     prompt_id: str,
     seed: int,
-) -> str | None:
+) -> tuple[str | None, str | None]:
     bindings: list[dict[str, Any] | None] = []
     for label, row in (("baseline", baseline_row), ("adapted", adapted_row)):
         evidence = row.get("evidence")
@@ -324,7 +367,7 @@ def _matched_speaker_reference_set(
         )
     baseline_binding, adapted_binding = bindings
     if baseline_binding is None or adapted_binding is None:
-        return None
+        return None, None
     baseline_mode = baseline_binding["mode"]
     adapted_mode = adapted_binding["mode"]
     if baseline_mode != adapted_mode:
@@ -332,14 +375,23 @@ def _matched_speaker_reference_set(
             f"matched speaker comparison requires the same reference binding mode for prompt {prompt_id}, seed {seed}"
         )
     if baseline_mode != "content_addressed_reference_set":
-        return None
+        return None, None
     baseline_sha = baseline_binding["reference_set_sha256"]
     adapted_sha = adapted_binding["reference_set_sha256"]
     if baseline_sha != adapted_sha:
         raise ValueError(
             f"matched speaker comparison requires the same reference set for prompt {prompt_id}, seed {seed}"
         )
-    return baseline_sha
+    baseline_assignment_sha = baseline_binding["reference_assignment_sha256"]
+    adapted_assignment_sha = adapted_binding["reference_assignment_sha256"]
+    baseline_plan_sha = baseline_binding["reference_assignment_plan_sha256"]
+    adapted_plan_sha = adapted_binding["reference_assignment_plan_sha256"]
+    if (baseline_assignment_sha, baseline_plan_sha) != (adapted_assignment_sha, adapted_plan_sha):
+        raise ValueError(
+            f"matched speaker comparison requires the same frozen reference assignment for prompt {prompt_id}, "
+            f"seed {seed}"
+        )
+    return baseline_sha, baseline_assignment_sha
 
 
 def compare_matched_candidates(
@@ -349,6 +401,7 @@ def compare_matched_candidates(
     baseline_candidate_id: str,
     adapted_candidate_id: str,
     seed: int = 20260812,
+    speaker_reference_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not baseline_candidate_id or not adapted_candidate_id:
         raise ValueError("baseline and adapted candidate ids must be non-empty")
@@ -362,6 +415,15 @@ def compare_matched_candidates(
         selected,
         {baseline_candidate_id, adapted_candidate_id},
     )
+    speaker_reference_plan_binding: dict[str, Any] | None = None
+    requires_speaker_metric = "speaker_embedding_similarity" in plan_binding["required_objective_metrics"]
+    if speaker_reference_plan is not None:
+        speaker_reference_plan_binding = validate_speaker_reference_assignment_plan(
+            speaker_reference_plan,
+            generation_plan=plan,
+        )
+    elif requires_speaker_metric:
+        raise ValueError("plan-required speaker metrics require a frozen speaker reference assignment plan")
 
     grouped: dict[str, dict[tuple[str, int], dict[str, Any]]] = {
         baseline_candidate_id: {},
@@ -410,7 +472,7 @@ def compare_matched_candidates(
     for key in sorted(baseline_keys):
         baseline_row = grouped[baseline_candidate_id][key]
         adapted_row = grouped[adapted_candidate_id][key]
-        speaker_reference_set_sha256 = _matched_speaker_reference_set(
+        speaker_reference_set_sha256, speaker_reference_assignment_sha256_value = _matched_speaker_reference_set(
             baseline_row,
             adapted_row,
             prompt_id=key[0],
@@ -442,6 +504,7 @@ def compare_matched_candidates(
                 pair_index * 2,
                 generation_plan_sha256=plan_binding["sha256"],
                 planned_sample=planned_by_id[baseline_row["sample_id"]],
+                speaker_reference_plan=speaker_reference_plan_binding,
             )
             _validate_content_bound_required_metrics(
                 adapted_row,
@@ -449,6 +512,7 @@ def compare_matched_candidates(
                 pair_index * 2 + 1,
                 generation_plan_sha256=plan_binding["sha256"],
                 planned_sample=planned_by_id[adapted_row["sample_id"]],
+                speaker_reference_plan=speaker_reference_plan_binding,
             )
         if baseline_valid and adapted_valid and set(baseline_metrics) != set(adapted_metrics):
             missing_adapted = sorted(set(baseline_metrics) - set(adapted_metrics))
@@ -478,6 +542,7 @@ def compare_matched_candidates(
                 "baseline_valid": baseline_valid,
                 "adapted_valid": adapted_valid,
                 "speaker_reference_set_sha256": speaker_reference_set_sha256,
+                "speaker_reference_assignment_sha256": speaker_reference_assignment_sha256_value,
                 "metrics": metrics,
             }
         )
@@ -518,6 +583,18 @@ def compare_matched_candidates(
         "pairing_keys": ["prompt_id", "seed"],
         "pair_count": pair_count,
         "generation_plan": plan_binding,
+        "speaker_reference_assignment_plan": (
+            {
+                "plan_id": speaker_reference_plan_binding["plan_id"],
+                "sha256": speaker_reference_plan_binding["sha256"],
+                "reference_catalog_sha256": speaker_reference_plan_binding["reference_catalog_sha256"],
+                "reference_aggregation": speaker_reference_plan_binding["reference_aggregation"],
+                "selection_policy": speaker_reference_plan_binding["selection_policy"],
+                "assignment_count": speaker_reference_plan_binding["assignment_count"],
+            }
+            if speaker_reference_plan_binding is not None
+            else None
+        ),
         "bootstrap_seed": seed,
         "validity": {
             "baseline_invalid_count": baseline_invalid,
@@ -532,7 +609,8 @@ def compare_matched_candidates(
         "proves_adaptation_benefit": False,
         "evidence_boundary": (
             "A passed matched comparison proves exact prompt and seed pairing, plan-required and symmetric metric "
-            "availability for valid pairs, and consistent extractor provenance. "
+            "availability for valid pairs, consistent extractor provenance, and frozen reference assignments when "
+            "speaker similarity is plan-required. "
             "Objective deltas remain proxies and do not establish speaker identity, accent fidelity, cadence, "
             "naturalness, or preference."
         ),
@@ -551,6 +629,7 @@ def compare_runtime_candidates(
     reference_runtime_id: str,
     candidate_runtime_id: str,
     seed: int = 20260812,
+    speaker_reference_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if reference_runtime_id == candidate_runtime_id:
         raise ValueError("runtime comparison requires two distinct runtime ids")
@@ -582,6 +661,7 @@ def compare_runtime_candidates(
         baseline_candidate_id=reference_candidate_id,
         adapted_candidate_id=candidate_candidate_id,
         seed=seed,
+        speaker_reference_plan=speaker_reference_plan,
     )
     return {
         "schema_version": "1.0.0",

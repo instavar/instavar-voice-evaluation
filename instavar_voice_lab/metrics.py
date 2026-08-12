@@ -193,10 +193,13 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
                     "reference_id",
                     "reference_audio_sha256",
                     "reference_transcript_sha256",
-                    "reference_aggregation",
-                    "reference_set_sha256",
-                    "references",
-                )
+                        "reference_aggregation",
+                        "reference_set_sha256",
+                        "references",
+                        "reference_catalog_sha256",
+                        "reference_assignment_plan_sha256",
+                        "reference_assignment_sha256",
+                    )
             ):
                 raise ValueError(f"observation {index} evidence.{kind} must not declare a speaker reference")
             else:

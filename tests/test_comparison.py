@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import json
 import unittest
 from copy import deepcopy
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
+from instavar_voice_lab.cli import main
 from instavar_voice_lab.comparison import compare_matched_candidates
-from instavar_voice_lab.speaker_references import reference_set_sha256, speaker_measurement_sha256
+from instavar_voice_lab.speaker_reference_plans import (
+    build_speaker_reference_assignment_plan,
+    speaker_reference_assignment_sha256,
+)
+from instavar_voice_lab.speaker_references import canonical_sha256, reference_set_sha256, speaker_measurement_sha256
 
 
 def observation(candidate_id: str, prompt_id: str, seed: int, *, valid: bool = True) -> dict:
@@ -92,6 +100,62 @@ class MatchedComparisonTests(unittest.TestCase):
             row["evidence"]["speaker_encoder"],
         )
 
+    @staticmethod
+    def assignment_plan(rows: list[dict], reference_id: str = "voice-1", audio_digit: str = "c") -> tuple[dict, dict]:
+        catalog_payload = {
+            "catalog_id": "voice-1-catalog",
+            "references": [
+                {
+                    "reference_id": reference_id,
+                    "audio": {"sha256": audio_digit * 64, "bytes": 100},
+                    "transcript": {"sha256": "d" * 64, "bytes": 20},
+                }
+            ],
+        }
+        catalog = {**catalog_payload, "catalog_sha256": canonical_sha256(catalog_payload)}
+        plan = generation_plan(rows)
+        plan["schema_version"] = "1.1.0"
+        plan["required_objective_metrics"] = ["speaker_embedding_similarity"]
+        assignments = {
+            (row["prompt_id"], row["seed"]): [reference_id]
+            for row in rows
+        }
+        reference_plan = build_speaker_reference_assignment_plan(
+            plan_id="voice-1-eval",
+            generation_plan=plan,
+            reference_catalog=catalog,
+            assignments=assignments,
+            policy_id="stratified-v1",
+            stratification_dimensions=["channel"],
+            rationale="Freeze one representative channel before generation and scoring.",
+        )
+        return plan, reference_plan
+
+    @classmethod
+    def bind_frozen_assignment(
+        cls,
+        row: dict,
+        reference_plan: dict,
+        reference_id: str = "voice-1",
+        audio_digit: str = "c",
+    ) -> None:
+        if "reference_speaker_embedding" in row:
+            cls.bind_reference_set(row, reference_id, audio_digit)
+        evidence = row["evidence"]["speaker_encoder"]
+        evidence.update(
+            {
+                "reference_catalog_sha256": reference_plan["reference_catalog_sha256"],
+                "reference_assignment_plan_sha256": reference_plan["assignment_plan_sha256"],
+                "reference_assignment_sha256": speaker_reference_assignment_sha256(
+                    assignment_plan_sha256=reference_plan["assignment_plan_sha256"],
+                    prompt_id=row["prompt_id"],
+                    seed=row["seed"],
+                    reference_ids=[reference_id],
+                ),
+            }
+        )
+        evidence["speaker_measurement_sha256"] = speaker_measurement_sha256(row, evidence)
+
     def test_compares_exact_prompt_and_seed_pairs(self) -> None:
         rows = [
             observation(candidate, prompt, seed)
@@ -174,12 +238,17 @@ class MatchedComparisonTests(unittest.TestCase):
             "speaker_embedding_similarity",
             "invalid_output_rate",
         ]
+        _, reference_plan = self.assignment_plan(rows)
+        reference_plan["generation_plan_sha256"] = canonical_sha256(bound_plan)
+        reference_plan_payload = {key: value for key, value in reference_plan.items() if key != "assignment_plan_sha256"}
+        reference_plan["assignment_plan_sha256"] = canonical_sha256(reference_plan_payload)
         with self.assertRaisesRegex(ValueError, "missing plan-required metrics"):
             compare_matched_candidates(
                 rows,
                 plan=bound_plan,
                 baseline_candidate_id="base",
                 adapted_candidate_id="adapter",
+                speaker_reference_plan=reference_plan,
             )
 
     def test_legacy_plan_reports_that_metric_coverage_is_not_enforced(self) -> None:
@@ -227,9 +296,7 @@ class MatchedComparisonTests(unittest.TestCase):
 
     def test_plan_required_speaker_metric_must_bind_reference_identity(self) -> None:
         rows = [observation("base", "p1", 42), observation("adapter", "p1", 42)]
-        bound_plan = generation_plan(rows)
-        bound_plan["schema_version"] = "1.1.0"
-        bound_plan["required_objective_metrics"] = ["speaker_embedding_similarity"]
+        bound_plan, reference_plan = self.assignment_plan(rows)
         for row in rows:
             row["audio_sha256"] = "a" * 64
             row["evidence"]["speaker_encoder"].update(
@@ -244,6 +311,7 @@ class MatchedComparisonTests(unittest.TestCase):
                 plan=bound_plan,
                 baseline_candidate_id="base",
                 adapted_candidate_id="adapter",
+                speaker_reference_plan=reference_plan,
             )
         for row in rows:
             row["evidence"]["speaker_encoder"].update(
@@ -259,16 +327,77 @@ class MatchedComparisonTests(unittest.TestCase):
                 plan=bound_plan,
                 baseline_candidate_id="base",
                 adapted_candidate_id="adapter",
+                speaker_reference_plan=reference_plan,
             )
         for row in rows:
             self.bind_reference_set(row, "voice-1", "c")
+        with self.assertRaisesRegex(ValueError, "frozen assignment plan"):
+            compare_matched_candidates(
+                rows,
+                plan=bound_plan,
+                baseline_candidate_id="base",
+                adapted_candidate_id="adapter",
+                speaker_reference_plan=reference_plan,
+            )
+        for row in rows:
+            self.bind_frozen_assignment(row, reference_plan)
         result = compare_matched_candidates(
             rows,
             plan=bound_plan,
             baseline_candidate_id="base",
             adapted_candidate_id="adapter",
+            speaker_reference_plan=reference_plan,
         )
         self.assertEqual(result["status"], "passed")
+
+    def test_rejects_outcome_selected_shared_reference_set_without_frozen_plan(self) -> None:
+        rows = [observation("base", "p1", 42), observation("adapter", "p1", 42)]
+        bound_plan, _ = self.assignment_plan(rows)
+        for row in rows:
+            self.bind_reference_set(row, "studio", "c")
+        with self.assertRaisesRegex(ValueError, "require a frozen speaker reference assignment plan"):
+            compare_matched_candidates(
+                rows,
+                plan=bound_plan,
+                baseline_candidate_id="base",
+                adapted_candidate_id="adapter",
+            )
+
+    def test_cli_compares_with_frozen_reference_assignments(self) -> None:
+        rows = [observation("base", "p1", 42), observation("adapter", "p1", 42)]
+        bound_plan, reference_plan = self.assignment_plan(rows)
+        for row in rows:
+            self.bind_frozen_assignment(row, reference_plan)
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            observations_path = root / "observations.json"
+            generation_plan_path = root / "generation-plan.json"
+            reference_plan_path = root / "reference-plan.json"
+            output_path = root / "comparison.json"
+            observations_path.write_text(json.dumps(rows), encoding="utf-8")
+            generation_plan_path.write_text(json.dumps(bound_plan), encoding="utf-8")
+            reference_plan_path.write_text(json.dumps(reference_plan), encoding="utf-8")
+            self.assertEqual(
+                main(
+                    [
+                        "compare-matched",
+                        str(observations_path),
+                        "--plan",
+                        str(generation_plan_path),
+                        "--speaker-reference-plan",
+                        str(reference_plan_path),
+                        "--baseline",
+                        "base",
+                        "--adapted",
+                        "adapter",
+                        "--output",
+                        str(output_path),
+                    ]
+                ),
+                0,
+            )
+            result = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(result["speaker_reference_assignment_plan"]["assignment_count"], 1)
 
     def test_rejects_same_extractor_revision_with_different_artifacts(self) -> None:
         rows = [observation("base", "p1", 42), observation("adapter", "p1", 42)]

@@ -65,8 +65,16 @@ def validate_speaker_reference_evidence(record: dict[str, Any], *, context: str)
     set_fields = ("reference_aggregation", "reference_set_sha256", "references")
     legacy_values = [record.get(field) for field in legacy_fields]
     set_values = [record.get(field) for field in set_fields]
+    auxiliary_set_fields = (
+        "reference_catalog_sha256",
+        "reference_assignment_plan_sha256",
+        "reference_assignment_sha256",
+    )
     has_legacy = any(value is not None for value in legacy_values)
     has_set = any(value is not None for value in set_values)
+    has_auxiliary_set = any(record.get(field) is not None for field in auxiliary_set_fields)
+    if has_auxiliary_set and not has_set:
+        raise ValueError(f"{context} cannot declare catalog or assignment bindings without a reference set")
     if has_legacy and has_set:
         raise ValueError(f"{context} cannot mix legacy and reference-set bindings")
     if has_legacy:
@@ -101,6 +109,19 @@ def validate_speaker_reference_evidence(record: dict[str, Any], *, context: str)
         expected = reference_set_sha256(references, aggregation=aggregation)
         if digest != expected:
             raise ValueError(f"{context}.reference_set_sha256 does not match its reference records")
+        reference_catalog_sha256 = record.get("reference_catalog_sha256")
+        if reference_catalog_sha256 is not None and (
+            not isinstance(reference_catalog_sha256, str) or not SHA256_RE.fullmatch(reference_catalog_sha256)
+        ):
+            raise ValueError(f"{context}.reference_catalog_sha256 must be a lowercase SHA-256")
+        assignment_fields = ("reference_assignment_plan_sha256", "reference_assignment_sha256")
+        assignment_values = [record.get(field) for field in assignment_fields]
+        if any(value is not None for value in assignment_values) and not all(
+            isinstance(value, str) and SHA256_RE.fullmatch(value) for value in assignment_values
+        ):
+            raise ValueError(f"{context} reference assignment binding must contain two lowercase SHA-256 values")
+        if assignment_values[0] is not None and reference_catalog_sha256 is None:
+            raise ValueError(f"{context} planned reference evidence must bind reference_catalog_sha256")
         return {
             "mode": "content_addressed_reference_set",
             "content_bound": True,
@@ -110,6 +131,9 @@ def validate_speaker_reference_evidence(record: dict[str, Any], *, context: str)
             "aggregation": aggregation,
             "reference_set_sha256": digest,
             "references": references,
+            "reference_catalog_sha256": reference_catalog_sha256,
+            "reference_assignment_plan_sha256": assignment_values[0],
+            "reference_assignment_sha256": assignment_values[1],
         }
     return {
         "mode": "unbound",
@@ -120,6 +144,9 @@ def validate_speaker_reference_evidence(record: dict[str, Any], *, context: str)
         "aggregation": None,
         "reference_set_sha256": None,
         "references": [],
+        "reference_catalog_sha256": None,
+        "reference_assignment_plan_sha256": None,
+        "reference_assignment_sha256": None,
     }
 
 
@@ -189,6 +216,15 @@ def speaker_measurement_sha256(row: dict[str, Any], evidence: dict[str, Any]) ->
             "reference_set_sha256": binding["reference_set_sha256"],
             "reference_aggregation": binding["aggregation"],
         }
+        if binding["reference_catalog_sha256"] is not None:
+            reference_binding["reference_catalog_sha256"] = binding["reference_catalog_sha256"]
+        if binding["reference_assignment_plan_sha256"] is not None:
+            reference_binding.update(
+                {
+                    "reference_assignment_plan_sha256": binding["reference_assignment_plan_sha256"],
+                    "reference_assignment_sha256": binding["reference_assignment_sha256"],
+                }
+            )
     elif binding["mode"] == "legacy_single_reference":
         reference_values = row.get("reference_speaker_embedding")
         if not isinstance(reference_values, list):

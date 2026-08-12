@@ -20,6 +20,7 @@ The shared layer provides:
 - exact baseline-versus-adapted pairing with extractor-provenance checks and paired bootstrap intervals;
 - content-addressed extractor implementation or model artifacts plus speaker-reference audio and transcript bindings;
 - deterministic multi-reference speaker scoring with per-sample reference-set binding;
+- frozen per-prompt and per-seed speaker-reference assignments bound to generation plans and reference catalogs;
 - content-addressed generation-attempt receipts for runtime timing, duration, and memory evidence;
 - exact-versus-derived cross-runtime artifact manifests with live content rechecks;
 - lifecycle-stage and matched-comparison declarations for every supported adaptation path;
@@ -422,7 +423,7 @@ observed host. It does not prove that an extractor actually loaded the declared
 bytes, is scientifically valid, is robust to accent variation, or is free from
 hostile-host tampering.
 
-### Use multiple speaker references without cherry-picking
+### Freeze multiple speaker references before evaluating candidates
 
 Extractor result schema 1.2 supports a content-addressed catalog of reference
 recordings. Build the catalog from every live audio and transcript pair:
@@ -435,19 +436,49 @@ instavar-voice-eval build-speaker-reference-catalog \
   --output speaker-reference-catalog.json
 ```
 
-Each schema 1.2 speaker result selects a sorted, unique `reference_ids` array
-for its sample and supplies one named embedding per selected reference. The
-consumer rehashes the complete live catalog and derives the selected
-reference-set digest. Apply the result with the same live declarations:
+Schema 1.2 prevents baseline and adapted candidates from using different sets,
+but it cannot show that a shared favorable set was chosen before results were
+observed. For a plan-required speaker metric, freeze one assignment for every
+prompt and seed pair before candidate generation or scoring. The same
+assignment applies to every candidate in that pair:
+
+This compact example assumes the generation plan contains only the shown
+`greeting` and `long-form` pairs at seed `20260812`:
+
+```bash
+instavar-voice-eval build-speaker-reference-assignment-plan \
+  --plan-id target-voice-1-eval \
+  --generation-plan generation-plan.json \
+  --reference-catalog speaker-reference-catalog.json \
+  --policy-id stratified-v1 \
+  --stratification-dimension accent \
+  --stratification-dimension channel \
+  --rationale "Freeze representative accent and channel coverage before generation." \
+  --assignment greeting=20260812=phone,studio \
+  --assignment long-form=20260812=phone,studio \
+  --output speaker-reference-assignment-plan.json
+```
+
+The assignment declarations must exactly cover every unique prompt and seed in
+the generation plan. Dimensions, assignments, and reference IDs must be unique
+and sorted. Unknown references, missing pairs, extra pairs, a changed generation
+plan, a changed catalog, or any post-freeze policy mutation fails validation.
+
+Each schema 1.3 speaker result supplies one named embedding per planned
+reference and binds the assignment-plan digest. The consumer rehashes the live
+catalog, validates the assignment plan against the live generation plan, and
+requires each result's sorted `reference_ids` to equal its frozen assignment:
 
 ```bash
 instavar-voice-eval apply-extractor-results \
   observations-with-audio-probes.json \
-  speaker-results-v1.2.json \
+  speaker-results-v1.3.json \
   --audio-base-dir evaluation \
   --extractor-artifact model=tree=/models/speaker-model \
   --speaker-reference phone=references/phone.wav=references/phone.txt \
   --speaker-reference studio=references/studio.wav=references/studio.txt \
+  --speaker-reference-plan speaker-reference-assignment-plan.json \
+  --generation-plan generation-plan.json \
   --output observations-with-multi-reference-speaker-metrics.json
 ```
 
@@ -455,14 +486,32 @@ The evaluator calculates cosine similarity separately for every bound
 reference and uses the fixed `mean_cosine_similarity_v1` aggregation. It emits
 the per-reference scores as diagnostics. A matched baseline and adapted pair
 must use the same reference set, while different prompts may use different
-sets. A per-sample `speaker_measurement_sha256` binds the selected set and both
-sides of every similarity calculation. This rejects candidate-specific
-best-reference selection and post-application embedding or centroid
-substitution. Schema 1.1 single-reference evidence remains readable for
-standalone migration reports, but a plan-required speaker metric must use the
-stronger reference-set contract. These hashes do not prove that a speaker
-encoder honestly derived its embeddings from the declared audio and model
-bytes.
+sets only when the frozen plan says so. Per-sample assignment and measurement
+digests bind the generation pair, planned membership, selected set, catalog,
+and both sides of every similarity calculation. This rejects candidate-specific
+selection, outcome-selected shared sets, and post-application embedding or
+centroid substitution.
+
+Schema 1.1 single-reference and schema 1.2 unplanned multi-reference evidence
+remain readable for standalone migration reports. A plan-required speaker
+metric now requires the schema 1.3 assignment contract and passes the same plan
+to comparison:
+
+```bash
+instavar-voice-eval compare-matched objective-observations.json \
+  --plan generation-plan.json \
+  --speaker-reference-plan speaker-reference-assignment-plan.json \
+  --baseline base-model \
+  --adapted selected-adapter \
+  --output matched-comparison.json
+```
+
+The hashes make a captured plan tamper-evident, but they do not prove when it
+was created. Commit or otherwise timestamp the assignment plan before running
+candidate generation for stronger chronology evidence. They also do not prove
+that a speaker encoder honestly derived its embeddings from the declared audio
+and model bytes, that the chosen strata are representative, or that the metric
+tracks human perception.
 
 ## Compare a matched baseline and adapted candidate
 
@@ -473,6 +522,7 @@ as `prompt_id`:
 ```bash
 instavar-voice-eval compare-matched objective-observations.json \
   --plan generation-plan.json \
+  --speaker-reference-plan speaker-reference-assignment-plan.json \
   --baseline base-model \
   --adapted selected-adapter \
   --output matched-comparison.json \

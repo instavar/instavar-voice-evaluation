@@ -34,6 +34,7 @@ from .runtime_artifacts import (
     validate_runtime_artifact_manifest,
     verify_runtime_artifact_manifest,
 )
+from .speaker_reference_plans import build_speaker_reference_assignment_plan
 from .suite import build_generation_plan, check_suite_coverage, validate_prompt_pack
 
 
@@ -71,6 +72,24 @@ def _speaker_reference_declarations(values: list[str]) -> dict[str, tuple[Path, 
             raise ValueError(f"duplicate speaker reference id: {reference_id}")
         declarations[reference_id] = (Path(raw_audio), Path(raw_transcript))
     return declarations
+
+
+def _speaker_reference_assignments(values: list[str]) -> dict[tuple[str, int], list[str]]:
+    assignments: dict[tuple[str, int], list[str]] = {}
+    for value in values:
+        parts = value.split("=", 2)
+        if len(parts) != 3 or not all(parts):
+            raise ValueError(f"invalid speaker reference assignment: {value}")
+        prompt_id, raw_seed, raw_reference_ids = parts
+        try:
+            seed = int(raw_seed)
+        except ValueError as error:
+            raise ValueError(f"invalid speaker reference assignment seed: {raw_seed}") from error
+        key = (prompt_id, seed)
+        if key in assignments:
+            raise ValueError(f"duplicate speaker reference assignment: {prompt_id}, seed {seed}")
+        assignments[key] = raw_reference_ids.split(",")
+    return assignments
 
 
 def _validate(kind: str, path: Path) -> int:
@@ -255,6 +274,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     speaker_reference_catalog.add_argument("--output", type=Path, required=True)
 
+    speaker_reference_plan = commands.add_parser(
+        "build-speaker-reference-assignment-plan",
+        help="freeze per-prompt speaker reference sets before generation or scoring",
+    )
+    speaker_reference_plan.add_argument("--plan-id", required=True)
+    speaker_reference_plan.add_argument("--generation-plan", type=Path, required=True)
+    speaker_reference_plan.add_argument("--reference-catalog", type=Path, required=True)
+    speaker_reference_plan.add_argument("--policy-id", required=True)
+    speaker_reference_plan.add_argument(
+        "--stratification-dimension",
+        action="append",
+        required=True,
+        help="sorted stable dimension such as channel, passage, emotion, or accent",
+    )
+    speaker_reference_plan.add_argument("--rationale", required=True)
+    speaker_reference_plan.add_argument(
+        "--assignment",
+        action="append",
+        required=True,
+        help="PROMPT_ID=SEED=REFERENCE_ID[,REFERENCE_ID...]",
+    )
+    speaker_reference_plan.add_argument("--output", type=Path, required=True)
+
     apply_results = commands.add_parser(
         "apply-extractor-results",
         help="immutably augment observations with content-addressed extractor results",
@@ -267,6 +309,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="live ROLE=file|tree=PATH declaration; required for external extractors",
+    )
+    apply_results.add_argument(
+        "--speaker-reference-plan",
+        type=Path,
+        help="live frozen assignment plan required for schema 1.3 speaker results",
+    )
+    apply_results.add_argument(
+        "--generation-plan",
+        type=Path,
+        help="live generation plan required for schema 1.3 speaker results",
     )
     apply_results.add_argument("--reference-audio", type=Path)
     apply_results.add_argument("--reference-transcript", type=Path)
@@ -305,6 +357,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     matched.add_argument("observations", type=Path)
     matched.add_argument("--plan", type=Path, required=True)
+    matched.add_argument(
+        "--speaker-reference-plan",
+        type=Path,
+        help="frozen assignment plan required when speaker similarity is plan-required",
+    )
     matched.add_argument("--baseline", required=True)
     matched.add_argument("--adapted", required=True)
     matched.add_argument("--output", type=Path, required=True)
@@ -316,6 +373,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     runtime_comparison.add_argument("observations", type=Path)
     runtime_comparison.add_argument("--plan", type=Path, required=True)
+    runtime_comparison.add_argument(
+        "--speaker-reference-plan",
+        type=Path,
+        help="frozen assignment plan required when speaker similarity is plan-required",
+    )
     runtime_comparison.add_argument("--artifact-manifest", type=Path, required=True)
     runtime_comparison.add_argument("--artifact-binding-plan", type=Path, required=True)
     runtime_comparison.add_argument("--reference-candidate", required=True)
@@ -615,6 +677,22 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         _write_json(args.output, result)
         return 0
+    if args.command == "build-speaker-reference-assignment-plan":
+        try:
+            result = build_speaker_reference_assignment_plan(
+                plan_id=args.plan_id,
+                generation_plan=_read_json(args.generation_plan),
+                reference_catalog=_read_json(args.reference_catalog),
+                assignments=_speaker_reference_assignments(args.assignment),
+                policy_id=args.policy_id,
+                stratification_dimensions=args.stratification_dimension,
+                rationale=args.rationale,
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0
     if args.command == "apply-extractor-results":
         try:
             artifacts = _artifact_declarations(args.extractor_artifact) if args.extractor_artifact else None
@@ -628,6 +706,10 @@ def main(argv: list[str] | None = None) -> int:
                 speaker_references=(
                     _speaker_reference_declarations(args.speaker_reference) if args.speaker_reference else None
                 ),
+                speaker_reference_plan=(
+                    _read_json(args.speaker_reference_plan) if args.speaker_reference_plan else None
+                ),
+                generation_plan=_read_json(args.generation_plan) if args.generation_plan else None,
             )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             print(error, file=sys.stderr)
@@ -667,6 +749,9 @@ def main(argv: list[str] | None = None) -> int:
                 baseline_candidate_id=args.baseline,
                 adapted_candidate_id=args.adapted,
                 seed=args.seed,
+                speaker_reference_plan=(
+                    _read_json(args.speaker_reference_plan) if args.speaker_reference_plan else None
+                ),
             )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             print(error, file=sys.stderr)
@@ -689,6 +774,9 @@ def main(argv: list[str] | None = None) -> int:
                 reference_runtime_id=args.reference_runtime,
                 candidate_runtime_id=args.candidate_runtime,
                 seed=args.seed,
+                speaker_reference_plan=(
+                    _read_json(args.speaker_reference_plan) if args.speaker_reference_plan else None
+                ),
             )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             print(error, file=sys.stderr)

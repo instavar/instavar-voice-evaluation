@@ -20,6 +20,7 @@ from instavar_voice_lab.extraction import (
     observation_document_sha256,
 )
 from instavar_voice_lab.metrics import score_objective_observations
+from instavar_voice_lab.speaker_reference_plans import build_speaker_reference_assignment_plan
 
 
 class ExtractionTests(unittest.TestCase):
@@ -498,7 +499,7 @@ class ExtractionTests(unittest.TestCase):
                     reference_transcript_path=transcript,
                 )
 
-    def test_applies_content_addressed_multi_reference_results(self) -> None:
+    def test_applies_frozen_content_addressed_multi_reference_results(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             audio = root / "tone.wav"
@@ -522,8 +523,38 @@ class ExtractionTests(unittest.TestCase):
                 catalog_id="voice-1-catalog",
                 references=live_references,
             )
+            generation_plan = {
+                "schema_version": "1.1.0",
+                "prompt_pack": {"id": "test", "version": "1.0.0", "sha256": "a" * 64},
+                "candidate_ids": ["adapter"],
+                "sample_count": 1,
+                "required_objective_metrics": ["speaker_embedding_similarity"],
+                "samples": [
+                    {
+                        "sample_id": observations[0]["sample_id"],
+                        "candidate_id": "adapter",
+                        "prompt_id": "p1",
+                        "seed": 42,
+                        "text": "hello world",
+                    }
+                ],
+                "generation_requirements": {
+                    "same_transcripts": True,
+                    "frozen_generation_settings": True,
+                    "record_failures_as_observations": True,
+                },
+            }
+            reference_plan = build_speaker_reference_assignment_plan(
+                plan_id="voice-1-eval",
+                generation_plan=generation_plan,
+                reference_catalog=catalog,
+                assignments={("p1", 42): ["phone", "studio"]},
+                policy_id="stratified-v1",
+                stratification_dimensions=["channel"],
+                rationale="Freeze studio and phone references before generation or scoring.",
+            )
             results = {
-                "schema_version": "1.2.0",
+                "schema_version": "1.3.0",
                 "source_observations_sha256": observation_document_sha256(observations),
                 "extractor": build_extractor_identity(
                     kind="speaker_encoder",
@@ -533,6 +564,7 @@ class ExtractionTests(unittest.TestCase):
                 ),
                 "reference_catalog": catalog,
                 "reference_aggregation": "mean_cosine_similarity_v1",
+                "reference_assignment_plan_sha256": reference_plan["assignment_plan_sha256"],
                 "results": [
                     {
                         "sample_id": observations[0]["sample_id"],
@@ -555,10 +587,13 @@ class ExtractionTests(unittest.TestCase):
                 audio_base_dir=root,
                 extractor_artifacts=artifacts,
                 speaker_references=live_references,
+                speaker_reference_plan=reference_plan,
+                generation_plan=generation_plan,
             )
             evidence = augmented[0]["evidence"]["speaker_encoder"]
             self.assertEqual(evidence["reference_aggregation"], "mean_cosine_similarity_v1")
             self.assertRegex(evidence["reference_set_sha256"], r"^[0-9a-f]{64}$")
+            self.assertEqual(evidence["reference_assignment_plan_sha256"], reference_plan["assignment_plan_sha256"])
             self.assertRegex(evidence["speaker_measurement_sha256"], r"^[0-9a-f]{64}$")
             self.assertEqual([item["reference_id"] for item in evidence["references"]], ["phone", "studio"])
             self.assertEqual(
@@ -567,11 +602,14 @@ class ExtractionTests(unittest.TestCase):
             )
 
             source_path = root / "observations.json"
-            results_path = root / "speaker-results-v1.2.json"
+            results_path = root / "speaker-results-v1.3.json"
             output_path = root / "augmented.json"
             catalog_path = root / "catalog.json"
+            generation_plan_path = root / "generation-plan.json"
+            reference_plan_path = root / "reference-plan.json"
             source_path.write_text(json.dumps(observations), encoding="utf-8")
             results_path.write_text(json.dumps(results), encoding="utf-8")
+            generation_plan_path.write_text(json.dumps(generation_plan), encoding="utf-8")
             self.assertEqual(
                 main(
                     [
@@ -592,6 +630,31 @@ class ExtractionTests(unittest.TestCase):
             self.assertEqual(
                 main(
                     [
+                        "build-speaker-reference-assignment-plan",
+                        "--plan-id",
+                        "voice-1-eval",
+                        "--generation-plan",
+                        str(generation_plan_path),
+                        "--reference-catalog",
+                        str(catalog_path),
+                        "--policy-id",
+                        "stratified-v1",
+                        "--stratification-dimension",
+                        "channel",
+                        "--rationale",
+                        "Freeze studio and phone references before generation or scoring.",
+                        "--assignment",
+                        "p1=42=phone,studio",
+                        "--output",
+                        str(reference_plan_path),
+                    ]
+                ),
+                0,
+            )
+            self.assertEqual(json.loads(reference_plan_path.read_text(encoding="utf-8")), reference_plan)
+            self.assertEqual(
+                main(
+                    [
                         "apply-extractor-results",
                         str(source_path),
                         str(results_path),
@@ -603,6 +666,10 @@ class ExtractionTests(unittest.TestCase):
                         f"phone={phone_audio}={phone_transcript}",
                         "--speaker-reference",
                         f"studio={studio_audio}={studio_transcript}",
+                        "--speaker-reference-plan",
+                        str(reference_plan_path),
+                        "--generation-plan",
+                        str(generation_plan_path),
                         "--output",
                         str(output_path),
                     ]
@@ -613,6 +680,35 @@ class ExtractionTests(unittest.TestCase):
                 json.loads(output_path.read_text(encoding="utf-8"))[0]["evidence"]["speaker_encoder"],
                 evidence,
             )
+
+            changed_results = deepcopy(results)
+            changed_results["results"][0]["reference_ids"] = ["studio"]
+            changed_results["results"][0]["values"]["reference_speaker_embeddings"] = [
+                {"reference_id": "studio", "embedding": [1.0, 0.0]}
+            ]
+            with self.assertRaisesRegex(ValueError, "do not match the frozen assignment"):
+                apply_extractor_results(
+                    observations,
+                    changed_results,
+                    audio_base_dir=root,
+                    extractor_artifacts=artifacts,
+                    speaker_references=live_references,
+                    speaker_reference_plan=reference_plan,
+                    generation_plan=generation_plan,
+                )
+
+            changed_generation_plan = deepcopy(generation_plan)
+            changed_generation_plan["samples"][0]["text"] = "changed after preregistration"
+            with self.assertRaisesRegex(ValueError, "does not match the generation plan"):
+                apply_extractor_results(
+                    observations,
+                    results,
+                    audio_base_dir=root,
+                    extractor_artifacts=artifacts,
+                    speaker_references=live_references,
+                    speaker_reference_plan=reference_plan,
+                    generation_plan=changed_generation_plan,
+                )
 
             augmented[0]["reference_speaker_embeddings"][0]["embedding"] = [1.0, 1.0]
             with self.assertRaisesRegex(ValueError, "does not match the speaker embeddings"):
@@ -626,6 +722,8 @@ class ExtractionTests(unittest.TestCase):
                     audio_base_dir=root,
                     extractor_artifacts=artifacts,
                     speaker_references=live_references,
+                    speaker_reference_plan=reference_plan,
+                    generation_plan=generation_plan,
                 )
 
     def test_rejects_multi_reference_membership_and_order_substitution(self) -> None:

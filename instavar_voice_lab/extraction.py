@@ -12,6 +12,10 @@ from typing import Any
 from .audio_probe import probe_wav
 from .lineage import KINDS, fingerprint_artifact
 from .observations import validate_objective_observations
+from .speaker_reference_plans import (
+    speaker_reference_assignment_sha256,
+    validate_speaker_reference_assignment_plan,
+)
 from .speaker_references import (
     REFERENCE_AGGREGATION,
     canonical_sha256,
@@ -24,7 +28,12 @@ IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 MUTABLE_REVISIONS = {"latest", "main", "master", "head", "unknown", "unversioned"}
 EXTRACTION_SCHEMA_VERSION = "1.1.0"
 MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION = "1.2.0"
-EXTRACTION_SCHEMA_VERSIONS = {EXTRACTION_SCHEMA_VERSION, MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION}
+PLANNED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION = "1.3.0"
+EXTRACTION_SCHEMA_VERSIONS = {
+    EXTRACTION_SCHEMA_VERSION,
+    MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
+    PLANNED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
+}
 EXTRACTOR_FIELDS = {
     "asr": {"hypothesis_text"},
     "speaker_encoder": {"reference_speaker_embedding", "speaker_embedding"},
@@ -342,6 +351,8 @@ def apply_extractor_results(
     reference_audio_path: Path | None = None,
     reference_transcript_path: Path | None = None,
     speaker_references: dict[str, tuple[Path, Path]] | None = None,
+    speaker_reference_plan: dict[str, Any] | None = None,
+    generation_plan: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     rows = _validated_source_rows(observations)
     if not isinstance(extraction, dict) or extraction.get("schema_version") not in EXTRACTION_SCHEMA_VERSIONS:
@@ -379,6 +390,7 @@ def apply_extractor_results(
 
     reference: dict[str, Any] | None = None
     reference_catalog: dict[str, Any] | None = None
+    reference_assignment_plan: dict[str, Any] | None = None
     if kind == "speaker_encoder":
         if extraction_version == EXTRACTION_SCHEMA_VERSION:
             raw_reference = extraction.get("reference")
@@ -388,6 +400,10 @@ def apply_extractor_results(
                 raise ValueError("speaker reference audio and transcript paths are required")
             if speaker_references is not None:
                 raise ValueError("legacy speaker results cannot declare a multi-reference catalog")
+            if speaker_reference_plan is not None:
+                raise ValueError("speaker reference assignment plans require schema 1.3 speaker results")
+            if generation_plan is not None:
+                raise ValueError("speaker generation plans require schema 1.3 speaker results")
             reference_id = raw_reference.get("reference_id")
             reference = build_speaker_reference_binding(
                 reference_id=reference_id,
@@ -412,9 +428,39 @@ def apply_extractor_results(
                 raise ValueError("speaker reference catalog does not match the live audio and transcripts")
             if extraction.get("reference_aggregation") != REFERENCE_AGGREGATION:
                 raise ValueError(f"reference_aggregation must equal {REFERENCE_AGGREGATION}")
-    elif "reference" in extraction or "reference_catalog" in extraction or "reference_aggregation" in extraction:
+            if extraction_version == PLANNED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION:
+                if speaker_reference_plan is None:
+                    raise ValueError("schema 1.3 speaker results require a live speaker reference assignment plan")
+                if generation_plan is None:
+                    raise ValueError("schema 1.3 speaker results require the live generation plan")
+                reference_assignment_plan = validate_speaker_reference_assignment_plan(
+                    speaker_reference_plan,
+                    generation_plan=generation_plan,
+                    reference_catalog=reference_catalog,
+                )
+                if extraction.get("reference_assignment_plan_sha256") != reference_assignment_plan["sha256"]:
+                    raise ValueError("speaker extractor results do not match the reference assignment plan")
+            elif speaker_reference_plan is not None:
+                raise ValueError("speaker reference assignment plans require schema 1.3 speaker results")
+            elif generation_plan is not None:
+                raise ValueError("speaker generation plans require schema 1.3 speaker results")
+    elif any(
+        field in extraction
+        for field in (
+            "reference",
+            "reference_catalog",
+            "reference_aggregation",
+            "reference_assignment_plan_sha256",
+        )
+    ):
         raise ValueError("speaker reference binding is only valid for speaker_encoder results")
-    elif reference_audio_path is not None or reference_transcript_path is not None or speaker_references is not None:
+    elif (
+        reference_audio_path is not None
+        or reference_transcript_path is not None
+        or speaker_references is not None
+        or speaker_reference_plan is not None
+        or generation_plan is not None
+    ):
         raise ValueError("speaker reference paths are only valid for speaker_encoder results")
     expected_document_fields = {
         "schema_version",
@@ -426,6 +472,8 @@ def apply_extractor_results(
         expected_document_fields.add("reference")
     elif kind == "speaker_encoder":
         expected_document_fields.update({"reference_catalog", "reference_aggregation"})
+        if extraction_version == PLANNED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION:
+            expected_document_fields.add("reference_assignment_plan_sha256")
     if set(extraction) != expected_document_fields:
         raise ValueError(f"extractor result document must contain exactly {sorted(expected_document_fields)}")
 
@@ -463,7 +511,10 @@ def apply_extractor_results(
         expected_result_fields = {"sample_id", "audio_sha256", "status"}
         reference_ids: list[str] | None = None
         selected_references: list[dict[str, str]] | None = None
-        if kind == "speaker_encoder" and extraction_version == MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION:
+        if kind == "speaker_encoder" and extraction_version in {
+            MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
+            PLANNED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
+        }:
             expected_result_fields.add("reference_ids")
             raw_reference_ids = result.get("reference_ids")
             if not isinstance(raw_reference_ids, list) or not raw_reference_ids:
@@ -481,6 +532,17 @@ def apply_extractor_results(
             unknown = sorted(set(reference_ids) - known_ids)
             if unknown:
                 raise ValueError(f"speaker result references are absent from the live catalog: {unknown}")
+            if reference_assignment_plan is not None:
+                assignment_key = (source_row.get("prompt_id"), source_row.get("seed"))
+                planned_reference_ids = reference_assignment_plan["assignments"].get(assignment_key)
+                if planned_reference_ids is None:
+                    raise ValueError(
+                        f"speaker reference assignment plan has no assignment for sample_id: {sample_id}"
+                    )
+                if reference_ids != planned_reference_ids:
+                    raise ValueError(
+                        f"speaker result reference_ids do not match the frozen assignment for sample_id: {sample_id}"
+                    )
             selected_references = _selected_reference_records(reference_catalog, reference_ids)
         if status == "complete":
             expected_result_fields.add("values")
@@ -522,6 +584,7 @@ def apply_extractor_results(
             provenance.update(
                 {
                     "reference_aggregation": REFERENCE_AGGREGATION,
+                    "reference_catalog_sha256": reference_catalog["catalog_sha256"],
                     "reference_set_sha256": reference_set_sha256(
                         selected_references,
                         aggregation=REFERENCE_AGGREGATION,
@@ -529,6 +592,18 @@ def apply_extractor_results(
                     "references": selected_references,
                 }
             )
+            if reference_assignment_plan is not None:
+                provenance.update(
+                    {
+                        "reference_assignment_plan_sha256": reference_assignment_plan["sha256"],
+                        "reference_assignment_sha256": speaker_reference_assignment_sha256(
+                            assignment_plan_sha256=reference_assignment_plan["sha256"],
+                            prompt_id=source_row["prompt_id"],
+                            seed=source_row["seed"],
+                            reference_ids=reference_ids,
+                        ),
+                    }
+                )
         if status == "complete":
             values = result.get("values")
             required_fields = (
