@@ -16,6 +16,7 @@ from .extraction import (
     build_audio_probe_results,
     build_extractor_identity,
     build_speaker_reference_binding,
+    build_speaker_reference_catalog,
     observation_document_sha256,
 )
 from .lifecycle import (
@@ -56,6 +57,19 @@ def _artifact_declarations(values: list[str]) -> dict[str, tuple[Path, str]]:
         if role in declarations:
             raise ValueError(f"duplicate artifact role: {role}")
         declarations[role] = (Path(raw_path), kind)
+    return declarations
+
+
+def _speaker_reference_declarations(values: list[str]) -> dict[str, tuple[Path, Path]]:
+    declarations: dict[str, tuple[Path, Path]] = {}
+    for value in values:
+        parts = value.split("=", 2)
+        if len(parts) != 3 or not all(parts):
+            raise ValueError(f"invalid speaker reference declaration: {value}")
+        reference_id, raw_audio, raw_transcript = parts
+        if reference_id in declarations:
+            raise ValueError(f"duplicate speaker reference id: {reference_id}")
+        declarations[reference_id] = (Path(raw_audio), Path(raw_transcript))
     return declarations
 
 
@@ -228,6 +242,19 @@ def build_parser() -> argparse.ArgumentParser:
     speaker_reference.add_argument("--transcript", type=Path, required=True)
     speaker_reference.add_argument("--output", type=Path, required=True)
 
+    speaker_reference_catalog = commands.add_parser(
+        "build-speaker-reference-catalog",
+        help="fingerprint a catalog of speaker reference audio and transcripts",
+    )
+    speaker_reference_catalog.add_argument("--catalog-id", required=True)
+    speaker_reference_catalog.add_argument(
+        "--reference",
+        action="append",
+        required=True,
+        help="REFERENCE_ID=AUDIO_PATH=TRANSCRIPT_PATH",
+    )
+    speaker_reference_catalog.add_argument("--output", type=Path, required=True)
+
     apply_results = commands.add_parser(
         "apply-extractor-results",
         help="immutably augment observations with content-addressed extractor results",
@@ -243,6 +270,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     apply_results.add_argument("--reference-audio", type=Path)
     apply_results.add_argument("--reference-transcript", type=Path)
+    apply_results.add_argument(
+        "--speaker-reference",
+        action="append",
+        default=[],
+        help="live REFERENCE_ID=AUDIO_PATH=TRANSCRIPT_PATH declaration for schema 1.2 speaker results",
+    )
     apply_results.add_argument("--output", type=Path, required=True)
 
     fingerprint_observations = commands.add_parser(
@@ -571,6 +604,17 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         _write_json(args.output, result)
         return 0
+    if args.command == "build-speaker-reference-catalog":
+        try:
+            result = build_speaker_reference_catalog(
+                catalog_id=args.catalog_id,
+                references=_speaker_reference_declarations(args.reference),
+            )
+        except (OSError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0
     if args.command == "apply-extractor-results":
         try:
             artifacts = _artifact_declarations(args.extractor_artifact) if args.extractor_artifact else None
@@ -581,6 +625,9 @@ def main(argv: list[str] | None = None) -> int:
                 extractor_artifacts=artifacts,
                 reference_audio_path=args.reference_audio,
                 reference_transcript_path=args.reference_transcript,
+                speaker_references=(
+                    _speaker_reference_declarations(args.speaker_reference) if args.speaker_reference else None
+                ),
             )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             print(error, file=sys.stderr)

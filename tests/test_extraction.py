@@ -16,8 +16,10 @@ from instavar_voice_lab.extraction import (
     build_audio_probe_results,
     build_extractor_identity,
     build_speaker_reference_binding,
+    build_speaker_reference_catalog,
     observation_document_sha256,
 )
+from instavar_voice_lab.metrics import score_objective_observations
 
 
 class ExtractionTests(unittest.TestCase):
@@ -494,6 +496,188 @@ class ExtractionTests(unittest.TestCase):
                     extractor_artifacts=artifacts,
                     reference_audio_path=reference_audio,
                     reference_transcript_path=transcript,
+                )
+
+    def test_applies_content_addressed_multi_reference_results(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            audio = root / "tone.wav"
+            studio_audio = root / "studio.wav"
+            phone_audio = root / "phone.wav"
+            studio_transcript = root / "studio.txt"
+            phone_transcript = root / "phone.txt"
+            model = root / "speaker.bin"
+            for path, sample_rate in ((audio, 24000), (studio_audio, 24000), (phone_audio, 16000)):
+                self.write_tone(path, sample_rate=sample_rate)
+            studio_transcript.write_text("studio reference", encoding="utf-8")
+            phone_transcript.write_text("phone reference", encoding="utf-8")
+            model.write_bytes(b"speaker-model")
+            observations = self.observations(audio)
+            artifacts = {"model": (model, "file")}
+            live_references = {
+                "phone": (phone_audio, phone_transcript),
+                "studio": (studio_audio, studio_transcript),
+            }
+            catalog = build_speaker_reference_catalog(
+                catalog_id="voice-1-catalog",
+                references=live_references,
+            )
+            results = {
+                "schema_version": "1.2.0",
+                "source_observations_sha256": observation_document_sha256(observations),
+                "extractor": build_extractor_identity(
+                    kind="speaker_encoder",
+                    name="test-speaker",
+                    revision="speaker-1",
+                    artifacts=artifacts,
+                ),
+                "reference_catalog": catalog,
+                "reference_aggregation": "mean_cosine_similarity_v1",
+                "results": [
+                    {
+                        "sample_id": observations[0]["sample_id"],
+                        "audio_sha256": observations[0]["audio_sha256"],
+                        "status": "complete",
+                        "reference_ids": ["phone", "studio"],
+                        "values": {
+                            "reference_speaker_embeddings": [
+                                {"reference_id": "phone", "embedding": [0.0, 1.0]},
+                                {"reference_id": "studio", "embedding": [1.0, 0.0]},
+                            ],
+                            "speaker_embedding": [1.0, 0.0],
+                        },
+                    }
+                ],
+            }
+            augmented = apply_extractor_results(
+                observations,
+                results,
+                audio_base_dir=root,
+                extractor_artifacts=artifacts,
+                speaker_references=live_references,
+            )
+            evidence = augmented[0]["evidence"]["speaker_encoder"]
+            self.assertEqual(evidence["reference_aggregation"], "mean_cosine_similarity_v1")
+            self.assertRegex(evidence["reference_set_sha256"], r"^[0-9a-f]{64}$")
+            self.assertRegex(evidence["speaker_measurement_sha256"], r"^[0-9a-f]{64}$")
+            self.assertEqual([item["reference_id"] for item in evidence["references"]], ["phone", "studio"])
+            self.assertEqual(
+                [item["reference_id"] for item in augmented[0]["reference_speaker_embeddings"]],
+                ["phone", "studio"],
+            )
+
+            source_path = root / "observations.json"
+            results_path = root / "speaker-results-v1.2.json"
+            output_path = root / "augmented.json"
+            catalog_path = root / "catalog.json"
+            source_path.write_text(json.dumps(observations), encoding="utf-8")
+            results_path.write_text(json.dumps(results), encoding="utf-8")
+            self.assertEqual(
+                main(
+                    [
+                        "build-speaker-reference-catalog",
+                        "--catalog-id",
+                        "voice-1-catalog",
+                        "--reference",
+                        f"phone={phone_audio}={phone_transcript}",
+                        "--reference",
+                        f"studio={studio_audio}={studio_transcript}",
+                        "--output",
+                        str(catalog_path),
+                    ]
+                ),
+                0,
+            )
+            self.assertEqual(json.loads(catalog_path.read_text(encoding="utf-8")), catalog)
+            self.assertEqual(
+                main(
+                    [
+                        "apply-extractor-results",
+                        str(source_path),
+                        str(results_path),
+                        "--audio-base-dir",
+                        str(root),
+                        "--extractor-artifact",
+                        f"model=file={model}",
+                        "--speaker-reference",
+                        f"phone={phone_audio}={phone_transcript}",
+                        "--speaker-reference",
+                        f"studio={studio_audio}={studio_transcript}",
+                        "--output",
+                        str(output_path),
+                    ]
+                ),
+                0,
+            )
+            self.assertEqual(
+                json.loads(output_path.read_text(encoding="utf-8"))[0]["evidence"]["speaker_encoder"],
+                evidence,
+            )
+
+            augmented[0]["reference_speaker_embeddings"][0]["embedding"] = [1.0, 1.0]
+            with self.assertRaisesRegex(ValueError, "does not match the speaker embeddings"):
+                score_objective_observations(augmented)
+
+            phone_transcript.write_text("substituted phone reference", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "catalog does not match"):
+                apply_extractor_results(
+                    observations,
+                    results,
+                    audio_base_dir=root,
+                    extractor_artifacts=artifacts,
+                    speaker_references=live_references,
+                )
+
+    def test_rejects_multi_reference_membership_and_order_substitution(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            audio = root / "tone.wav"
+            reference_audio = root / "reference.wav"
+            transcript = root / "reference.txt"
+            model = root / "speaker.bin"
+            self.write_tone(audio)
+            self.write_tone(reference_audio)
+            transcript.write_text("reference", encoding="utf-8")
+            model.write_bytes(b"speaker-model")
+            observations = self.observations(audio)
+            artifacts = {"model": (model, "file")}
+            live_references = {"studio": (reference_audio, transcript)}
+            results = {
+                "schema_version": "1.2.0",
+                "source_observations_sha256": observation_document_sha256(observations),
+                "extractor": build_extractor_identity(
+                    kind="speaker_encoder",
+                    name="test-speaker",
+                    revision="speaker-1",
+                    artifacts=artifacts,
+                ),
+                "reference_catalog": build_speaker_reference_catalog(
+                    catalog_id="voice-1-catalog",
+                    references=live_references,
+                ),
+                "reference_aggregation": "mean_cosine_similarity_v1",
+                "results": [
+                    {
+                        "sample_id": observations[0]["sample_id"],
+                        "audio_sha256": observations[0]["audio_sha256"],
+                        "status": "complete",
+                        "reference_ids": ["studio"],
+                        "values": {
+                            "reference_speaker_embeddings": [
+                                {"reference_id": "other", "embedding": [1.0, 0.0]},
+                            ],
+                            "speaker_embedding": [1.0, 0.0],
+                        },
+                    }
+                ],
+            }
+            with self.assertRaisesRegex(ValueError, "exactly match reference_ids"):
+                apply_extractor_results(
+                    observations,
+                    results,
+                    audio_base_dir=root,
+                    extractor_artifacts=artifacts,
+                    speaker_references=live_references,
                 )
 
     def test_rejects_empty_or_symlinked_identity_artifacts(self) -> None:

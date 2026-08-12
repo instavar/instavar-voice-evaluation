@@ -19,6 +19,7 @@ The shared layer provides:
 - plan-bound objective metric requirements that reject bilateral metric omission;
 - exact baseline-versus-adapted pairing with extractor-provenance checks and paired bootstrap intervals;
 - content-addressed extractor implementation or model artifacts plus speaker-reference audio and transcript bindings;
+- deterministic multi-reference speaker scoring with per-sample reference-set binding;
 - content-addressed generation-attempt receipts for runtime timing, duration, and memory evidence;
 - exact-versus-derived cross-runtime artifact manifests with live content rechecks;
 - lifecycle-stage and matched-comparison declarations for every supported adaptation path;
@@ -420,6 +421,48 @@ This protects source, extractor-artifact, and speaker-reference identity on the
 observed host. It does not prove that an extractor actually loaded the declared
 bytes, is scientifically valid, is robust to accent variation, or is free from
 hostile-host tampering.
+
+### Use multiple speaker references without cherry-picking
+
+Extractor result schema 1.2 supports a content-addressed catalog of reference
+recordings. Build the catalog from every live audio and transcript pair:
+
+```bash
+instavar-voice-eval build-speaker-reference-catalog \
+  --catalog-id target-voice-1 \
+  --reference phone=references/phone.wav=references/phone.txt \
+  --reference studio=references/studio.wav=references/studio.txt \
+  --output speaker-reference-catalog.json
+```
+
+Each schema 1.2 speaker result selects a sorted, unique `reference_ids` array
+for its sample and supplies one named embedding per selected reference. The
+consumer rehashes the complete live catalog and derives the selected
+reference-set digest. Apply the result with the same live declarations:
+
+```bash
+instavar-voice-eval apply-extractor-results \
+  observations-with-audio-probes.json \
+  speaker-results-v1.2.json \
+  --audio-base-dir evaluation \
+  --extractor-artifact model=tree=/models/speaker-model \
+  --speaker-reference phone=references/phone.wav=references/phone.txt \
+  --speaker-reference studio=references/studio.wav=references/studio.txt \
+  --output observations-with-multi-reference-speaker-metrics.json
+```
+
+The evaluator calculates cosine similarity separately for every bound
+reference and uses the fixed `mean_cosine_similarity_v1` aggregation. It emits
+the per-reference scores as diagnostics. A matched baseline and adapted pair
+must use the same reference set, while different prompts may use different
+sets. A per-sample `speaker_measurement_sha256` binds the selected set and both
+sides of every similarity calculation. This rejects candidate-specific
+best-reference selection and post-application embedding or centroid
+substitution. Schema 1.1 single-reference evidence remains readable for
+standalone migration reports, but a plan-required speaker metric must use the
+stronger reference-set contract. These hashes do not prove that a speaker
+encoder honestly derived its embeddings from the declared audio and model
+bytes.
 
 ## Compare a matched baseline and adapted candidate
 

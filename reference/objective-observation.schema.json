@@ -33,6 +33,23 @@
         "minItems": 1,
         "items": { "type": "number" }
       },
+      "reference_speaker_embeddings": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": ["reference_id", "embedding"],
+          "properties": {
+            "reference_id": { "$ref": "#/$defs/identifier" },
+            "embedding": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "number" }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
       "speaker_embedding": {
         "type": "array",
         "minItems": 1,

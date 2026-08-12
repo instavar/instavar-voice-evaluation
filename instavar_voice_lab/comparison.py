@@ -11,6 +11,7 @@ from typing import Any
 from .attempts import runtime_attempt_is_content_bound
 from .metrics import bootstrap_mean_interval, score_objective_observations
 from .runtime_artifacts import exact_runtime_binding, verify_runtime_artifact_manifest
+from .speaker_references import speaker_measurement_is_content_bound, validate_speaker_reference_evidence
 
 METRIC_DIRECTIONS = {
     "asr_word_error_rate": "lower_is_better",
@@ -160,7 +161,7 @@ def _evidence_signature(
     row: dict[str, Any],
     kind: str,
     index: int,
-) -> tuple[str, str, str, str, str, str] | None:
+) -> tuple[str, str, str, str, str, str, str] | None:
     evidence = row.get("evidence")
     if not isinstance(evidence, dict) or kind not in evidence:
         return None
@@ -180,25 +181,32 @@ def _evidence_signature(
         raise ValueError(
             f"observation {index} evidence.{kind}.extractor_artifact_set_sha256 must be a lowercase SHA-256"
         )
-    reference_id = record.get("reference_id")
-    reference_audio_sha = record.get("reference_audio_sha256")
-    reference_transcript_sha = record.get("reference_transcript_sha256")
-    reference_values = (reference_id, reference_audio_sha, reference_transcript_sha)
-    if any(value is not None for value in reference_values):
-        if kind != "speaker_encoder":
-            raise ValueError(f"observation {index} evidence.{kind} must not declare a speaker reference")
-        if not all(value is not None for value in reference_values):
-            raise ValueError(f"observation {index} evidence.speaker_encoder reference binding must be complete")
-        if not isinstance(reference_id, str) or not reference_id.strip():
-            raise ValueError(f"observation {index} evidence.speaker_encoder.reference_id must be non-empty")
-        for field_name, value in (
-            ("reference_audio_sha256", reference_audio_sha),
-            ("reference_transcript_sha256", reference_transcript_sha),
-        ):
-            if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
-                raise ValueError(
-                    f"observation {index} evidence.speaker_encoder.{field_name} must be a lowercase SHA-256"
-                )
+    if kind == "speaker_encoder":
+        reference_binding = validate_speaker_reference_evidence(
+            record,
+            context=f"observation {index} evidence.speaker_encoder",
+        )
+        reference_id = reference_binding["reference_id"]
+        reference_audio_sha = reference_binding["reference_audio_sha256"]
+        reference_transcript_sha = reference_binding["reference_transcript_sha256"]
+        reference_aggregation = reference_binding["aggregation"]
+    elif any(
+        record.get(field) is not None
+        for field in (
+            "reference_id",
+            "reference_audio_sha256",
+            "reference_transcript_sha256",
+            "reference_aggregation",
+            "reference_set_sha256",
+            "references",
+        )
+    ):
+        raise ValueError(f"observation {index} evidence.{kind} must not declare a speaker reference")
+    else:
+        reference_id = None
+        reference_audio_sha = None
+        reference_transcript_sha = None
+        reference_aggregation = None
     return (
         extractor.strip(),
         revision.strip(),
@@ -206,11 +214,12 @@ def _evidence_signature(
         reference_id or "",
         reference_audio_sha or "",
         reference_transcript_sha or "",
+        reference_aggregation or "",
     )
 
 
 def _provenance(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    by_kind: dict[str, set[tuple[str, str, str, str, str, str]]] = defaultdict(set)
+    by_kind: dict[str, set[tuple[str, str, str, str, str, str, str]]] = defaultdict(set)
     for index, row in enumerate(rows):
         for kind in set(METRIC_EVIDENCE_KINDS.values()):
             signature = _evidence_signature(row, kind, index)
@@ -232,6 +241,7 @@ def _provenance(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             "reference_id": next(iter(signatures))[3] or None,
             "reference_audio_sha256": next(iter(signatures))[4] or None,
             "reference_transcript_sha256": next(iter(signatures))[5] or None,
+            "reference_aggregation": next(iter(signatures))[6] or None,
         }
         for kind, signatures in sorted(by_kind.items())
         if signatures
@@ -272,17 +282,64 @@ def _validate_content_bound_required_metrics(
         if not isinstance(artifact_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", artifact_sha):
             raise ValueError(f"observation {index} evidence.{kind} must bind extractor_artifact_set_sha256")
         if kind == "speaker_encoder":
-            reference_id = record.get("reference_id")
-            reference_audio_sha = record.get("reference_audio_sha256")
-            reference_transcript_sha = record.get("reference_transcript_sha256")
-            if not isinstance(reference_id, str) or not reference_id.strip():
-                raise ValueError(f"observation {index} evidence.speaker_encoder must bind reference_id")
-            for field_name, value in (
-                ("reference_audio_sha256", reference_audio_sha),
-                ("reference_transcript_sha256", reference_transcript_sha),
+            reference_binding = validate_speaker_reference_evidence(
+                record,
+                context=f"observation {index} evidence.speaker_encoder",
+            )
+            if not reference_binding["content_bound"]:
+                raise ValueError(f"observation {index} evidence.speaker_encoder must bind a speaker reference")
+            if reference_binding["mode"] != "content_addressed_reference_set":
+                raise ValueError(
+                    f"observation {index} plan-required speaker metrics must bind a content-addressed reference set"
+                )
+            if not speaker_measurement_is_content_bound(
+                row,
+                record,
+                context=f"observation {index} evidence.speaker_encoder",
             ):
-                if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
-                    raise ValueError(f"observation {index} evidence.speaker_encoder must bind {field_name}")
+                raise ValueError(f"observation {index} plan-required speaker metrics must bind the speaker measurement")
+
+
+def _matched_speaker_reference_set(
+    baseline_row: dict[str, Any],
+    adapted_row: dict[str, Any],
+    *,
+    prompt_id: str,
+    seed: int,
+) -> str | None:
+    bindings: list[dict[str, Any] | None] = []
+    for label, row in (("baseline", baseline_row), ("adapted", adapted_row)):
+        evidence = row.get("evidence")
+        record = evidence.get("speaker_encoder") if isinstance(evidence, dict) else None
+        if record is None:
+            bindings.append(None)
+            continue
+        if not isinstance(record, dict):
+            raise ValueError(f"{label} speaker evidence must be an object for prompt {prompt_id}, seed {seed}")
+        bindings.append(
+            validate_speaker_reference_evidence(
+                record,
+                context=f"{label} evidence.speaker_encoder for prompt {prompt_id}, seed {seed}",
+            )
+        )
+    baseline_binding, adapted_binding = bindings
+    if baseline_binding is None or adapted_binding is None:
+        return None
+    baseline_mode = baseline_binding["mode"]
+    adapted_mode = adapted_binding["mode"]
+    if baseline_mode != adapted_mode:
+        raise ValueError(
+            f"matched speaker comparison requires the same reference binding mode for prompt {prompt_id}, seed {seed}"
+        )
+    if baseline_mode != "content_addressed_reference_set":
+        return None
+    baseline_sha = baseline_binding["reference_set_sha256"]
+    adapted_sha = adapted_binding["reference_set_sha256"]
+    if baseline_sha != adapted_sha:
+        raise ValueError(
+            f"matched speaker comparison requires the same reference set for prompt {prompt_id}, seed {seed}"
+        )
+    return baseline_sha
 
 
 def compare_matched_candidates(
@@ -353,6 +410,12 @@ def compare_matched_candidates(
     for key in sorted(baseline_keys):
         baseline_row = grouped[baseline_candidate_id][key]
         adapted_row = grouped[adapted_candidate_id][key]
+        speaker_reference_set_sha256 = _matched_speaker_reference_set(
+            baseline_row,
+            adapted_row,
+            prompt_id=key[0],
+            seed=key[1],
+        )
         baseline_valid = baseline_row.get("valid") is True
         adapted_valid = adapted_row.get("valid") is True
         baseline_invalid += not baseline_valid
@@ -414,6 +477,7 @@ def compare_matched_candidates(
                 "adapted_sample_id": adapted_row["sample_id"],
                 "baseline_valid": baseline_valid,
                 "adapted_valid": adapted_valid,
+                "speaker_reference_set_sha256": speaker_reference_set_sha256,
                 "metrics": metrics,
             }
         )

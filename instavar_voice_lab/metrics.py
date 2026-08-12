@@ -4,10 +4,16 @@ import math
 import random
 import re
 from statistics import mean, median
-from typing import Any, Iterable
+from typing import Any
 
 from .attempts import runtime_attempt_is_content_bound
 from .observations import validate_objective_observations
+from .speaker_references import (
+    aggregate_reference_similarities,
+    cosine_similarity,
+    speaker_measurement_is_content_bound,
+    validate_speaker_reference_evidence,
+)
 
 TOKEN_RE = re.compile(r"[\w']+", re.UNICODE)
 
@@ -37,18 +43,6 @@ def word_error_rate(reference: str, hypothesis: str) -> float:
     if not reference_tokens:
         raise ValueError("reference text must contain at least one token")
     return _edit_distance(reference_tokens, _tokens(hypothesis)) / len(reference_tokens)
-
-
-def cosine_similarity(reference: Iterable[float], candidate: Iterable[float]) -> float:
-    left = [float(value) for value in reference]
-    right = [float(value) for value in candidate]
-    if not left or len(left) != len(right):
-        raise ValueError("speaker embeddings must be non-empty and have equal dimensions")
-    left_norm = math.sqrt(sum(value * value for value in left))
-    right_norm = math.sqrt(sum(value * value for value in right))
-    if left_norm == 0 or right_norm == 0:
-        raise ValueError("speaker embeddings must have non-zero norm")
-    return sum(a * b for a, b in zip(left, right)) / (left_norm * right_norm)
 
 
 def _percentile(values: list[float], probability: float) -> float:
@@ -109,8 +103,9 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
     seen: set[str] = set()
     per_candidate: dict[str, dict[str, Any]] = {}
     per_sample: list[dict[str, Any]] = []
-    evidence_signatures: dict[str, set[tuple[str, str, str, str, str, str]]] = {}
+    evidence_signatures: dict[str, set[tuple[str, str, str, str, str, str, str]]] = {}
     evidence_content_binding: dict[str, dict[str, int]] = {}
+    speaker_reference_sets: set[str] = set()
 
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
@@ -176,27 +171,40 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
                 raise ValueError(
                     f"observation {index} evidence.{kind}.extractor_artifact_set_sha256 must be a lowercase SHA-256"
                 )
-            reference_id = record.get("reference_id")
-            reference_audio_sha = record.get("reference_audio_sha256")
-            reference_transcript_sha = record.get("reference_transcript_sha256")
-            reference_values = (reference_id, reference_audio_sha, reference_transcript_sha)
             if kind == "speaker_encoder":
-                if any(value is not None for value in reference_values) and not all(
-                    value is not None for value in reference_values
-                ):
-                    raise ValueError(f"observation {index} evidence.speaker_encoder reference binding must be complete")
-                if reference_id is not None and (not isinstance(reference_id, str) or not reference_id.strip()):
-                    raise ValueError(f"observation {index} evidence.speaker_encoder.reference_id must be non-empty")
-                for field_name, value in (
-                    ("reference_audio_sha256", reference_audio_sha),
-                    ("reference_transcript_sha256", reference_transcript_sha),
-                ):
-                    if value is not None and (not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)):
-                        raise ValueError(
-                            f"observation {index} evidence.speaker_encoder.{field_name} must be a lowercase SHA-256"
-                        )
-            elif any(value is not None for value in reference_values):
+                reference_binding = validate_speaker_reference_evidence(
+                    record,
+                    context=f"observation {index} evidence.speaker_encoder",
+                )
+                reference_id = reference_binding["reference_id"]
+                reference_audio_sha = reference_binding["reference_audio_sha256"]
+                reference_transcript_sha = reference_binding["reference_transcript_sha256"]
+                reference_aggregation = reference_binding["aggregation"]
+                speaker_measurement_bound = speaker_measurement_is_content_bound(
+                    row,
+                    record,
+                    context=f"observation {index} evidence.speaker_encoder",
+                )
+                if reference_binding["reference_set_sha256"] is not None:
+                    speaker_reference_sets.add(reference_binding["reference_set_sha256"])
+            elif any(
+                record.get(field) is not None
+                for field in (
+                    "reference_id",
+                    "reference_audio_sha256",
+                    "reference_transcript_sha256",
+                    "reference_aggregation",
+                    "reference_set_sha256",
+                    "references",
+                )
+            ):
                 raise ValueError(f"observation {index} evidence.{kind} must not declare a speaker reference")
+            else:
+                reference_id = None
+                reference_audio_sha = None
+                reference_transcript_sha = None
+                reference_aggregation = None
+                speaker_measurement_bound = False
             evidence_signatures.setdefault(kind, set()).add(
                 (
                     record["extractor"].strip(),
@@ -205,6 +213,7 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
                     reference_id or "",
                     reference_audio_sha or "",
                     reference_transcript_sha or "",
+                    reference_aggregation or "",
                 )
             )
             binding = evidence_content_binding.setdefault(kind, {"bound": 0, "unbound": 0})
@@ -224,7 +233,9 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
                     or input_audio_sha != audio_sha
                 ):
                     raise ValueError(f"observation {index} evidence.{kind}.input_audio_sha256 must match audio_sha256")
-            reference_bound = kind != "speaker_encoder" or all(value is not None for value in reference_values)
+            reference_bound = kind != "speaker_encoder" or (
+                reference_binding["content_bound"] and speaker_measurement_bound
+            )
             if audio_bound and artifact_sha is not None and reference_bound:
                 binding["bound"] += 1
             else:
@@ -246,13 +257,27 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
                 sample_result["excluded_quality_metrics"].append("asr_word_error_rate")
 
         reference_embedding = row.get("reference_speaker_embedding")
+        reference_embeddings = row.get("reference_speaker_embeddings")
         candidate_embedding = row.get("speaker_embedding")
-        if reference_embedding is not None or candidate_embedding is not None:
-            if not isinstance(reference_embedding, list) or not isinstance(candidate_embedding, list):
-                raise ValueError(f"observation {index} must provide both speaker embeddings as arrays")
+        if reference_embedding is not None and reference_embeddings is not None:
+            raise ValueError(f"observation {index} cannot mix legacy and multi-reference speaker embeddings")
+        if reference_embedding is not None or reference_embeddings is not None or candidate_embedding is not None:
             require_evidence("speaker_encoder")
-            if row["valid"]:
+            if reference_embeddings is not None:
+                record = evidence["speaker_encoder"]
+                value, reference_scores = aggregate_reference_similarities(
+                    reference_embeddings,
+                    candidate_embedding,
+                    evidence=record,
+                    context=f"observation {index} evidence.speaker_encoder",
+                )
+                sample_result["diagnostics"]["speaker_reference_scores"] = reference_scores
+                sample_result["diagnostics"]["speaker_reference_aggregation"] = record["reference_aggregation"]
+            else:
+                if not isinstance(reference_embedding, list) or not isinstance(candidate_embedding, list):
+                    raise ValueError(f"observation {index} must provide both speaker embeddings as arrays")
                 value = cosine_similarity(reference_embedding, candidate_embedding)
+            if row["valid"]:
                 sample_result["metrics"]["speaker_embedding_similarity"] = value
                 candidate["speaker_embedding_similarity"].append(value)
             else:
@@ -407,6 +432,7 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
                         "reference_id": reference_id or None,
                         "reference_audio_sha256": reference_audio_sha or None,
                         "reference_transcript_sha256": reference_transcript_sha or None,
+                        "reference_aggregation": reference_aggregation or None,
                     }
                     for (
                         extractor,
@@ -415,8 +441,11 @@ def score_objective_observations(rows: list[dict[str, Any]], *, seed: int = 2026
                         reference_id,
                         reference_audio_sha,
                         reference_transcript_sha,
+                        reference_aggregation,
                     ) in sorted(signatures)
                 ],
+                "reference_set_sha256s": sorted(speaker_reference_sets) if kind == "speaker_encoder" else [],
+                "reference_set_count": len(speaker_reference_sets) if kind == "speaker_encoder" else 0,
                 "content_bound_count": evidence_content_binding[kind]["bound"],
                 "unbound_count": evidence_content_binding[kind]["unbound"],
                 "all_content_bound": evidence_content_binding[kind]["unbound"] == 0,

@@ -12,11 +12,19 @@ from typing import Any
 from .audio_probe import probe_wav
 from .lineage import KINDS, fingerprint_artifact
 from .observations import validate_objective_observations
+from .speaker_references import (
+    REFERENCE_AGGREGATION,
+    canonical_sha256,
+    reference_set_sha256,
+    speaker_measurement_sha256,
+)
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 MUTABLE_REVISIONS = {"latest", "main", "master", "head", "unknown", "unversioned"}
 EXTRACTION_SCHEMA_VERSION = "1.1.0"
+MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION = "1.2.0"
+EXTRACTION_SCHEMA_VERSIONS = {EXTRACTION_SCHEMA_VERSION, MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION}
 EXTRACTOR_FIELDS = {
     "asr": {"hypothesis_text"},
     "speaker_encoder": {"reference_speaker_embedding", "speaker_embedding"},
@@ -111,6 +119,51 @@ def build_speaker_reference_binding(
     }
 
 
+def build_speaker_reference_catalog(
+    *,
+    catalog_id: str,
+    references: dict[str, tuple[Path, Path]],
+) -> dict[str, Any]:
+    if not isinstance(catalog_id, str) or not IDENTIFIER_RE.fullmatch(catalog_id):
+        raise ValueError("speaker reference catalog id must be a stable lowercase identifier")
+    if not isinstance(references, dict) or not references:
+        raise ValueError("speaker reference catalog must contain at least one reference")
+    records: list[dict[str, Any]] = []
+    for reference_id, paths in sorted(references.items()):
+        if not isinstance(reference_id, str) or not IDENTIFIER_RE.fullmatch(reference_id):
+            raise ValueError("speaker reference ids must be stable lowercase identifiers")
+        if (
+            not isinstance(paths, tuple)
+            or len(paths) != 2
+            or not isinstance(paths[0], Path)
+            or not isinstance(paths[1], Path)
+        ):
+            raise ValueError(f"speaker reference {reference_id} must declare audio and transcript paths")
+        binding = build_speaker_reference_binding(
+            reference_id=reference_id,
+            audio_path=paths[0],
+            transcript_path=paths[1],
+        )
+        records.append(binding)
+    catalog_payload = {"catalog_id": catalog_id, "references": records}
+    return {**catalog_payload, "catalog_sha256": canonical_sha256(catalog_payload)}
+
+
+def _selected_reference_records(catalog: dict[str, Any], reference_ids: list[str]) -> list[dict[str, str]]:
+    by_id = {item["reference_id"]: item for item in catalog["references"]}
+    records: list[dict[str, str]] = []
+    for reference_id in reference_ids:
+        raw = by_id[reference_id]
+        records.append(
+            {
+                "reference_id": reference_id,
+                "reference_audio_sha256": raw["audio"]["sha256"],
+                "reference_transcript_sha256": raw["transcript"]["sha256"],
+            }
+        )
+    return records
+
+
 def _builtin_audio_probe_artifacts() -> dict[str, tuple[Path, str]]:
     return {"implementation": (Path(__file__).with_name("audio_probe.py"), "file")}
 
@@ -157,12 +210,51 @@ def observation_document_sha256(observations: Any) -> str:
     return _canonical_sha256(_validated_source_rows(observations))
 
 
-def _validate_values(kind: str, values: dict[str, Any], sample_id: str) -> None:
+def _validate_values(
+    kind: str,
+    values: dict[str, Any],
+    sample_id: str,
+    *,
+    reference_ids: list[str] | None = None,
+) -> None:
     if kind == "asr":
         if not isinstance(values["hypothesis_text"], str):
             raise ValueError(f"ASR hypothesis_text must be a string for sample_id: {sample_id}")
         return
     if kind == "speaker_encoder":
+        if reference_ids is not None:
+            references = values["reference_speaker_embeddings"]
+            candidate = values["speaker_embedding"]
+            if not isinstance(references, list) or not isinstance(candidate, list):
+                raise ValueError(f"multi-reference speaker embeddings must be arrays for sample_id: {sample_id}")
+            observed_ids: list[str] = []
+            for index, item in enumerate(references):
+                if not isinstance(item, dict) or set(item) != {"reference_id", "embedding"}:
+                    raise ValueError(
+                        f"reference_speaker_embeddings[{index}] must contain exactly reference_id and embedding "
+                        f"for sample_id: {sample_id}"
+                    )
+                observed_ids.append(item["reference_id"])
+                embedding = item["embedding"]
+                if not isinstance(embedding, list) or not embedding or len(embedding) != len(candidate):
+                    raise ValueError(
+                        f"speaker embeddings must be non-empty equal-length arrays for sample_id: {sample_id}"
+                    )
+                if any(
+                    isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value))
+                    for value in embedding
+                ):
+                    raise ValueError(f"speaker embeddings must contain finite numbers for sample_id: {sample_id}")
+            if observed_ids != reference_ids:
+                raise ValueError(
+                    f"reference_speaker_embeddings must exactly match reference_ids for sample_id: {sample_id}"
+                )
+            if not candidate or any(
+                isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value))
+                for value in candidate
+            ):
+                raise ValueError(f"speaker embeddings must contain finite numbers for sample_id: {sample_id}")
+            return
         reference = values["reference_speaker_embedding"]
         candidate = values["speaker_embedding"]
         if (
@@ -249,10 +341,14 @@ def apply_extractor_results(
     extractor_artifacts: dict[str, tuple[Path, str]] | None = None,
     reference_audio_path: Path | None = None,
     reference_transcript_path: Path | None = None,
+    speaker_references: dict[str, tuple[Path, Path]] | None = None,
 ) -> list[dict[str, Any]]:
     rows = _validated_source_rows(observations)
-    if not isinstance(extraction, dict) or extraction.get("schema_version") != EXTRACTION_SCHEMA_VERSION:
-        raise ValueError(f"extractor results must be a version {EXTRACTION_SCHEMA_VERSION} object")
+    if not isinstance(extraction, dict) or extraction.get("schema_version") not in EXTRACTION_SCHEMA_VERSIONS:
+        raise ValueError(
+            f"extractor results schema_version must be one of: {', '.join(sorted(EXTRACTION_SCHEMA_VERSIONS))}"
+        )
+    extraction_version = extraction["schema_version"]
     source_sha = extraction.get("source_observations_sha256")
     if source_sha != observation_document_sha256(rows):
         raise ValueError("extractor results do not match the source observation document")
@@ -282,23 +378,43 @@ def apply_extractor_results(
         raise ValueError("extractor identity does not match the live artifact set")
 
     reference: dict[str, Any] | None = None
+    reference_catalog: dict[str, Any] | None = None
     if kind == "speaker_encoder":
-        raw_reference = extraction.get("reference")
-        if not isinstance(raw_reference, dict):
-            raise ValueError("speaker extractor results must bind a speaker reference")
-        if reference_audio_path is None or reference_transcript_path is None:
-            raise ValueError("speaker reference audio and transcript paths are required")
-        reference_id = raw_reference.get("reference_id")
-        reference = build_speaker_reference_binding(
-            reference_id=reference_id,
-            audio_path=reference_audio_path,
-            transcript_path=reference_transcript_path,
-        )
-        if raw_reference != reference:
-            raise ValueError("speaker reference identity does not match the live audio and transcript")
-    elif "reference" in extraction:
+        if extraction_version == EXTRACTION_SCHEMA_VERSION:
+            raw_reference = extraction.get("reference")
+            if not isinstance(raw_reference, dict):
+                raise ValueError("speaker extractor results must bind a speaker reference")
+            if reference_audio_path is None or reference_transcript_path is None:
+                raise ValueError("speaker reference audio and transcript paths are required")
+            if speaker_references is not None:
+                raise ValueError("legacy speaker results cannot declare a multi-reference catalog")
+            reference_id = raw_reference.get("reference_id")
+            reference = build_speaker_reference_binding(
+                reference_id=reference_id,
+                audio_path=reference_audio_path,
+                transcript_path=reference_transcript_path,
+            )
+            if raw_reference != reference:
+                raise ValueError("speaker reference identity does not match the live audio and transcript")
+        else:
+            if reference_audio_path is not None or reference_transcript_path is not None:
+                raise ValueError("multi-reference speaker results require --speaker-reference declarations")
+            raw_catalog = extraction.get("reference_catalog")
+            if not isinstance(raw_catalog, dict):
+                raise ValueError("multi-reference speaker results must bind a reference catalog")
+            if speaker_references is None:
+                raise ValueError("live speaker reference declarations are required")
+            reference_catalog = build_speaker_reference_catalog(
+                catalog_id=raw_catalog.get("catalog_id"),
+                references=speaker_references,
+            )
+            if raw_catalog != reference_catalog:
+                raise ValueError("speaker reference catalog does not match the live audio and transcripts")
+            if extraction.get("reference_aggregation") != REFERENCE_AGGREGATION:
+                raise ValueError(f"reference_aggregation must equal {REFERENCE_AGGREGATION}")
+    elif "reference" in extraction or "reference_catalog" in extraction or "reference_aggregation" in extraction:
         raise ValueError("speaker reference binding is only valid for speaker_encoder results")
-    elif reference_audio_path is not None or reference_transcript_path is not None:
+    elif reference_audio_path is not None or reference_transcript_path is not None or speaker_references is not None:
         raise ValueError("speaker reference paths are only valid for speaker_encoder results")
     expected_document_fields = {
         "schema_version",
@@ -306,8 +422,10 @@ def apply_extractor_results(
         "extractor",
         "results",
     }
-    if kind == "speaker_encoder":
+    if kind == "speaker_encoder" and extraction_version == EXTRACTION_SCHEMA_VERSION:
         expected_document_fields.add("reference")
+    elif kind == "speaker_encoder":
+        expected_document_fields.update({"reference_catalog", "reference_aggregation"})
     if set(extraction) != expected_document_fields:
         raise ValueError(f"extractor result document must contain exactly {sorted(expected_document_fields)}")
 
@@ -343,6 +461,27 @@ def apply_extractor_results(
         if status not in {"complete", "failed"}:
             raise ValueError(f"extractor result status must be complete or failed for sample_id: {sample_id}")
         expected_result_fields = {"sample_id", "audio_sha256", "status"}
+        reference_ids: list[str] | None = None
+        selected_references: list[dict[str, str]] | None = None
+        if kind == "speaker_encoder" and extraction_version == MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION:
+            expected_result_fields.add("reference_ids")
+            raw_reference_ids = result.get("reference_ids")
+            if not isinstance(raw_reference_ids, list) or not raw_reference_ids:
+                raise ValueError(f"speaker result reference_ids must be a non-empty array for sample_id: {sample_id}")
+            if any(
+                not isinstance(reference_id, str) or not IDENTIFIER_RE.fullmatch(reference_id)
+                for reference_id in raw_reference_ids
+            ):
+                raise ValueError(f"speaker result reference_ids must be stable lowercase identifiers: {sample_id}")
+            reference_ids = list(raw_reference_ids)
+            if reference_ids != sorted(set(reference_ids)):
+                raise ValueError(f"speaker result reference_ids must be unique and sorted for sample_id: {sample_id}")
+            assert reference_catalog is not None
+            known_ids = {item["reference_id"] for item in reference_catalog["references"]}
+            unknown = sorted(set(reference_ids) - known_ids)
+            if unknown:
+                raise ValueError(f"speaker result references are absent from the live catalog: {unknown}")
+            selected_references = _selected_reference_records(reference_catalog, reference_ids)
         if status == "complete":
             expected_result_fields.add("values")
         else:
@@ -379,18 +518,35 @@ def apply_extractor_results(
                     "reference_transcript_sha256": reference["transcript"]["sha256"],
                 }
             )
+        elif selected_references is not None:
+            provenance.update(
+                {
+                    "reference_aggregation": REFERENCE_AGGREGATION,
+                    "reference_set_sha256": reference_set_sha256(
+                        selected_references,
+                        aggregation=REFERENCE_AGGREGATION,
+                    ),
+                    "references": selected_references,
+                }
+            )
         if status == "complete":
             values = result.get("values")
-            required_fields = EXTRACTOR_FIELDS[kind]
+            required_fields = (
+                {"reference_speaker_embeddings", "speaker_embedding"}
+                if kind == "speaker_encoder" and reference_ids is not None
+                else EXTRACTOR_FIELDS[kind]
+            )
             if not isinstance(values, dict) or set(values) != required_fields:
                 raise ValueError(
                     f"complete {kind} result must contain exactly {sorted(required_fields)} for sample_id: {sample_id}"
                 )
-            _validate_values(kind, values, sample_id)
+            _validate_values(kind, values, sample_id, reference_ids=reference_ids)
             conflicts = sorted(required_fields & target.keys())
             if conflicts:
                 raise ValueError(f"extractor result would overwrite fields for sample_id {sample_id}: {conflicts}")
             target.update(values)
+            if kind == "speaker_encoder":
+                provenance["speaker_measurement_sha256"] = speaker_measurement_sha256(target, provenance)
             evidence[kind] = provenance
         else:
             if "values" in result:

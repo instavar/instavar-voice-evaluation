@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from instavar_voice_lab.metrics import cosine_similarity, score_objective_observations, word_error_rate
+from instavar_voice_lab.speaker_references import reference_set_sha256, speaker_measurement_sha256
 
 
 class MetricTests(unittest.TestCase):
@@ -201,6 +202,12 @@ class MetricTests(unittest.TestCase):
             }
         )
         result = score_objective_observations([row])
+        self.assertFalse(result["metric_provenance"]["speaker_encoder"]["all_content_bound"])
+        row["evidence"]["speaker_encoder"]["speaker_measurement_sha256"] = speaker_measurement_sha256(
+            row,
+            row["evidence"]["speaker_encoder"],
+        )
+        result = score_objective_observations([row])
         self.assertTrue(result["metric_provenance"]["speaker_encoder"]["all_content_bound"])
 
     def test_rejects_partial_speaker_reference_identity(self) -> None:
@@ -221,6 +228,100 @@ class MetricTests(unittest.TestCase):
             },
         }
         with self.assertRaisesRegex(ValueError, "reference binding must be complete"):
+            score_objective_observations([row])
+
+    def test_scores_each_bound_reference_then_uses_fixed_mean(self) -> None:
+        references = [
+            {
+                "reference_id": "phone",
+                "reference_audio_sha256": "c" * 64,
+                "reference_transcript_sha256": "d" * 64,
+            },
+            {
+                "reference_id": "studio",
+                "reference_audio_sha256": "e" * 64,
+                "reference_transcript_sha256": "f" * 64,
+            },
+        ]
+        aggregation = "mean_cosine_similarity_v1"
+        row = {
+            "sample_id": "sample-1",
+            "candidate_id": "adapter",
+            "prompt_id": "p1",
+            "requested_text": "hello",
+            "valid": True,
+            "audio_sha256": "a" * 64,
+            "reference_speaker_embeddings": [
+                {"reference_id": "phone", "embedding": [0.0, 1.0]},
+                {"reference_id": "studio", "embedding": [1.0, 0.0]},
+            ],
+            "speaker_embedding": [1.0, 0.0],
+            "evidence": {
+                "speaker_encoder": {
+                    "extractor": "speaker",
+                    "revision": "1",
+                    "input_audio_sha256": "a" * 64,
+                    "extractor_artifact_set_sha256": "b" * 64,
+                    "reference_aggregation": aggregation,
+                    "reference_set_sha256": reference_set_sha256(references, aggregation=aggregation),
+                    "references": references,
+                }
+            },
+        }
+        row["evidence"]["speaker_encoder"]["speaker_measurement_sha256"] = speaker_measurement_sha256(
+            row,
+            row["evidence"]["speaker_encoder"],
+        )
+        result = score_objective_observations([row])
+        sample = result["samples"][0]
+        self.assertAlmostEqual(sample["metrics"]["speaker_embedding_similarity"], 0.5)
+        self.assertEqual(
+            [item["cosine_similarity"] for item in sample["diagnostics"]["speaker_reference_scores"]],
+            [0.0, 1.0],
+        )
+        self.assertEqual(result["metric_provenance"]["speaker_encoder"]["reference_set_count"], 1)
+        self.assertTrue(result["metric_provenance"]["speaker_encoder"]["all_content_bound"])
+        row["reference_speaker_embeddings"][1]["embedding"] = [1.0, 1.0]
+        with self.assertRaisesRegex(ValueError, "does not match the speaker embeddings"):
+            score_objective_observations([row])
+
+    def test_rejects_reference_embedding_or_set_digest_substitution(self) -> None:
+        references = [
+            {
+                "reference_id": "studio",
+                "reference_audio_sha256": "c" * 64,
+                "reference_transcript_sha256": "d" * 64,
+            }
+        ]
+        row = {
+            "sample_id": "sample-1",
+            "candidate_id": "adapter",
+            "prompt_id": "p1",
+            "requested_text": "hello",
+            "valid": True,
+            "audio_sha256": "a" * 64,
+            "reference_speaker_embeddings": [{"reference_id": "other", "embedding": [1.0, 0.0]}],
+            "speaker_embedding": [1.0, 0.0],
+            "evidence": {
+                "speaker_encoder": {
+                    "extractor": "speaker",
+                    "revision": "1",
+                    "input_audio_sha256": "a" * 64,
+                    "extractor_artifact_set_sha256": "b" * 64,
+                    "reference_aggregation": "mean_cosine_similarity_v1",
+                    "reference_set_sha256": reference_set_sha256(
+                        references,
+                        aggregation="mean_cosine_similarity_v1",
+                    ),
+                    "references": references,
+                }
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "exactly match the bound sorted reference set"):
+            score_objective_observations([row])
+        row["reference_speaker_embeddings"][0]["reference_id"] = "studio"
+        row["evidence"]["speaker_encoder"]["reference_set_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "does not match its reference records"):
             score_objective_observations([row])
 
 

@@ -4,6 +4,7 @@ import unittest
 from copy import deepcopy
 
 from instavar_voice_lab.comparison import compare_matched_candidates
+from instavar_voice_lab.speaker_references import reference_set_sha256, speaker_measurement_sha256
 
 
 def observation(candidate_id: str, prompt_id: str, seed: int, *, valid: bool = True) -> dict:
@@ -59,6 +60,38 @@ def generation_plan(rows: list[dict]) -> dict:
 
 
 class MatchedComparisonTests(unittest.TestCase):
+    @staticmethod
+    def bind_reference_set(row: dict, reference_id: str, audio_digit: str) -> None:
+        references = [
+            {
+                "reference_id": reference_id,
+                "reference_audio_sha256": audio_digit * 64,
+                "reference_transcript_sha256": "d" * 64,
+            }
+        ]
+        del row["reference_speaker_embedding"]
+        row["reference_speaker_embeddings"] = [{"reference_id": reference_id, "embedding": [1.0, 0.0]}]
+        row["speaker_embedding"] = [1.0, 0.0]
+        row["audio_sha256"] = "a" * 64
+        row["evidence"]["speaker_encoder"]["input_audio_sha256"] = "a" * 64
+        row["evidence"]["speaker_encoder"]["extractor_artifact_set_sha256"] = "b" * 64
+        for field in ("reference_id", "reference_audio_sha256", "reference_transcript_sha256"):
+            row["evidence"]["speaker_encoder"].pop(field, None)
+        row["evidence"]["speaker_encoder"].update(
+            {
+                "reference_aggregation": "mean_cosine_similarity_v1",
+                "reference_set_sha256": reference_set_sha256(
+                    references,
+                    aggregation="mean_cosine_similarity_v1",
+                ),
+                "references": references,
+            }
+        )
+        row["evidence"]["speaker_encoder"]["speaker_measurement_sha256"] = speaker_measurement_sha256(
+            row,
+            row["evidence"]["speaker_encoder"],
+        )
+
     def test_compares_exact_prompt_and_seed_pairs(self) -> None:
         rows = [
             observation(candidate, prompt, seed)
@@ -205,7 +238,7 @@ class MatchedComparisonTests(unittest.TestCase):
                     "extractor_artifact_set_sha256": "b" * 64,
                 }
             )
-        with self.assertRaisesRegex(ValueError, "must bind reference_id"):
+        with self.assertRaisesRegex(ValueError, "must bind a speaker reference"):
             compare_matched_candidates(
                 rows,
                 plan=bound_plan,
@@ -220,6 +253,15 @@ class MatchedComparisonTests(unittest.TestCase):
                     "reference_transcript_sha256": "d" * 64,
                 }
             )
+        with self.assertRaisesRegex(ValueError, "content-addressed reference set"):
+            compare_matched_candidates(
+                rows,
+                plan=bound_plan,
+                baseline_candidate_id="base",
+                adapted_candidate_id="adapter",
+            )
+        for row in rows:
+            self.bind_reference_set(row, "voice-1", "c")
         result = compare_matched_candidates(
             rows,
             plan=bound_plan,
@@ -239,6 +281,37 @@ class MatchedComparisonTests(unittest.TestCase):
                 baseline_candidate_id="base",
                 adapted_candidate_id="adapter",
             )
+
+    def test_rejects_candidate_specific_reference_set_cherry_picking(self) -> None:
+        rows = [observation("base", "p1", 42), observation("adapter", "p1", 42)]
+        self.bind_reference_set(rows[0], "studio", "c")
+        self.bind_reference_set(rows[1], "phone", "e")
+        with self.assertRaisesRegex(ValueError, "same reference set"):
+            compare_matched_candidates(
+                rows,
+                plan=generation_plan(rows),
+                baseline_candidate_id="base",
+                adapted_candidate_id="adapter",
+            )
+
+    def test_allows_per_prompt_reference_sets_when_each_pair_matches(self) -> None:
+        rows = [observation(candidate, prompt, 42) for candidate in ("base", "adapter") for prompt in ("p1", "p2")]
+        for row in rows:
+            if row["prompt_id"] == "p1":
+                self.bind_reference_set(row, "studio", "c")
+            else:
+                self.bind_reference_set(row, "phone", "e")
+        result = compare_matched_candidates(
+            rows,
+            plan=generation_plan(rows),
+            baseline_candidate_id="base",
+            adapted_candidate_id="adapter",
+        )
+        self.assertEqual(result["pair_count"], 2)
+        self.assertEqual(
+            len({pair["speaker_reference_set_sha256"] for pair in result["pairs"]}),
+            2,
+        )
 
     def test_preserves_invalid_pair_in_validity_delta(self) -> None:
         rows = [observation("base", "p1", 42), observation("adapter", "p1", 42, valid=False)]
