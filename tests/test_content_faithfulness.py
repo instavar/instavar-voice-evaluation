@@ -6,6 +6,7 @@ import unittest
 from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from instavar_voice_lab.cli import main
 from instavar_voice_lab.content_faithfulness import build_content_faithfulness_report
@@ -162,6 +163,81 @@ class ContentFaithfulnessTests(unittest.TestCase):
             self.assertEqual(sample["reference_exclusive_ngram_count"], 0)
             self.assertFalse(sample["flags"]["reference_transcript_overlap"])
             self.assertEqual(sample["content_gate_status"], "not_flagged")
+
+    def test_nfkc_equivalent_hypothesis_has_zero_wer(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            requested = "Today we discuss careful testing and why exact evidence matters for reliable systems."
+            full_width = "".join(
+                chr(ord(character) + 0xFEE0) if 0x21 <= ord(character) <= 0x7E else character
+                for character in requested
+            )
+            result = self.build(root, full_width)
+            sample = result["samples"][0]
+            self.assertEqual(sample["word_error_rate"], 0)
+            self.assertFalse(sample["flags"]["high_word_error_rate"])
+            self.assertEqual(sample["content_gate_status"], "not_flagged")
+
+    def test_two_token_reference_leak_can_be_checked_explicitly(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = self.build(
+                root,
+                "honest and",
+                ngram_size=2,
+                minimum_reference_ngram_hits=1,
+            )
+            sample = result["samples"][0]
+            self.assertTrue(sample["flags"]["reference_transcript_overlap"])
+            self.assertFalse(sample["flags"]["repetition_excess"])
+
+    def test_rejects_tokenless_requested_text_and_bounded_asr_work(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            observations, plan, catalog, assignment, references = self.fixtures(root, "placeholder")
+            plan["samples"][0]["text"] = "..."
+            observations[0]["requested_text"] = "..."
+            assignment = build_speaker_reference_assignment_plan(
+                plan_id="speaker-plan",
+                generation_plan=plan,
+                reference_catalog=catalog,
+                assignments={("p1", 42): ["studio"]},
+                policy_id="fixed",
+                stratification_dimensions=["channel"],
+                rationale="Use the same retained reference for every candidate.",
+            )
+            with self.assertRaisesRegex(ValueError, "requested text.*at least one token"):
+                build_content_faithfulness_report(
+                    observations,
+                    generation_plan=plan,
+                    reference_catalog=catalog,
+                    reference_assignment_plan=assignment,
+                    speaker_references=references,
+                )
+
+            observations, plan, catalog, assignment, references = self.fixtures(
+                root,
+                "word " * 4097,
+            )
+            with self.assertRaisesRegex(ValueError, "ASR hypothesis.*normalized tokens"):
+                build_content_faithfulness_report(
+                    observations,
+                    generation_plan=plan,
+                    reference_catalog=catalog,
+                    reference_assignment_plan=assignment,
+                    speaker_references=references,
+                )
+
+            observations, plan, catalog, assignment, references = self.fixtures(root, "bounded work")
+            with patch("instavar_voice_lab.content_faithfulness.MAX_TOTAL_WER_CELL_COUNT", 10):
+                with self.assertRaisesRegex(ValueError, "total WER matrix cells"):
+                    build_content_faithfulness_report(
+                        observations,
+                        generation_plan=plan,
+                        reference_catalog=catalog,
+                        reference_assignment_plan=assignment,
+                        speaker_references=references,
+                    )
 
     def test_rejects_unbound_asr_and_drifted_reference_bytes(self) -> None:
         with TemporaryDirectory() as temporary:

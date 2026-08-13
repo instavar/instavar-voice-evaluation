@@ -22,6 +22,9 @@ MAX_REFERENCE_COUNT = 128
 MAX_REFERENCE_IDS_PER_SAMPLE = 32
 MAX_TOTAL_REFERENCE_TOKENS = 50000
 MAX_TRANSCRIPT_BYTES = 64 * 1024
+MAX_DIAGNOSTIC_TEXT_BYTES = 64 * 1024
+MAX_DIAGNOSTIC_TOKENS_PER_TEXT = 4096
+MAX_TOTAL_WER_CELL_COUNT = 20_000_000
 MAX_REPORTED_NGRAM_HITS = 100
 
 
@@ -35,6 +38,20 @@ def _ngrams(tokens: list[str], size: int) -> list[tuple[str, ...]]:
 
 def _ngram_sha256(ngram: tuple[str, ...]) -> str:
     return hashlib.sha256(" ".join(ngram).encode("utf-8")).hexdigest()
+
+
+def _validated_diagnostic_tokens(text: str, label: str, *, allow_empty: bool) -> list[str]:
+    if not isinstance(text, str):
+        raise ValueError(f"{label} must be a string")
+    byte_count = len(text.encode("utf-8"))
+    if byte_count > MAX_DIAGNOSTIC_TEXT_BYTES:
+        raise ValueError(f"{label} exceeds {MAX_DIAGNOSTIC_TEXT_BYTES} UTF-8 bytes")
+    tokens = _tokens(text)
+    if not tokens and not allow_empty:
+        raise ValueError(f"{label} must contain at least one token")
+    if len(tokens) > MAX_DIAGNOSTIC_TOKENS_PER_TEXT:
+        raise ValueError(f"{label} exceeds {MAX_DIAGNOSTIC_TOKENS_PER_TEXT} normalized tokens")
+    return tokens
 
 
 def _read_reference_transcript(path: Path, reference_id: str) -> str:
@@ -77,16 +94,14 @@ def _validate_asr_binding(row: dict[str, Any], index: int) -> None:
 
 def _sample_diagnostics(
     *,
-    requested_text: str,
-    hypothesis_text: str,
+    requested: list[str],
+    hypothesis: list[str],
     reference_texts: list[str],
     ngram_size: int,
     repetition_excess_fraction_threshold: float,
     minimum_reference_ngram_hits: int,
     word_error_rate_threshold: float,
 ) -> dict[str, Any]:
-    requested = _tokens(requested_text)
-    hypothesis = _tokens(hypothesis_text)
     requested_ngrams = Counter(_ngrams(requested, ngram_size))
     hypothesis_ngrams = Counter(_ngrams(hypothesis, ngram_size))
 
@@ -103,7 +118,7 @@ def _sample_diagnostics(
     reference_exclusive.difference_update(requested_ngrams)
     reference_hits = sorted(reference_exclusive & set(hypothesis_ngrams))
 
-    wer = word_error_rate(requested_text, hypothesis_text)
+    wer = word_error_rate(" ".join(requested), " ".join(hypothesis))
     flags = {
         "high_word_error_rate": wer > word_error_rate_threshold,
         "repetition_excess": repetition_fraction > repetition_excess_fraction_threshold,
@@ -194,6 +209,7 @@ def build_content_faithfulness_report(
         raise ValueError(f"speaker reference transcripts exceed {MAX_TOTAL_REFERENCE_TOKENS} total tokens")
     planned_by_id = {sample["sample_id"]: sample for sample in generation_plan["samples"]}
     samples: list[dict[str, Any]] = []
+    total_wer_cell_count = 0
     for index, row in enumerate(observations):
         planned = planned_by_id[row["sample_id"]]
         mismatches = [
@@ -246,10 +262,25 @@ def build_content_faithfulness_report(
             )
         else:
             _validate_asr_binding(row, index)
+            requested_tokens = _validated_diagnostic_tokens(
+                planned["text"],
+                f"generation-plan requested text for {row['sample_id']}",
+                allow_empty=False,
+            )
+            hypothesis_tokens = _validated_diagnostic_tokens(
+                row["hypothesis_text"],
+                f"ASR hypothesis for {row['sample_id']}",
+                allow_empty=True,
+            )
+            total_wer_cell_count += len(requested_tokens) * max(1, len(hypothesis_tokens))
+            if total_wer_cell_count > MAX_TOTAL_WER_CELL_COUNT:
+                raise ValueError(
+                    f"content diagnostics exceed {MAX_TOTAL_WER_CELL_COUNT} total WER matrix cells"
+                )
             result.update(
                 _sample_diagnostics(
-                    requested_text=planned["text"],
-                    hypothesis_text=row["hypothesis_text"],
+                    requested=requested_tokens,
+                    hypothesis=hypothesis_tokens,
                     reference_texts=[reference_texts[reference_id] for reference_id in reference_ids],
                     ngram_size=ngram_size,
                     repetition_excess_fraction_threshold=repetition_threshold,
