@@ -209,6 +209,11 @@ comparison can prioritize matched samples for blind review, but it cannot prove
 better cadence, less monotony, accent fidelity, naturalness, preference, or an
 adaptation benefit.
 
+Implementation `2a98ab0a378850478e20cda39a1fc001e160aa24` passed hosted
+Quality run `31663581095` on 2026-08-13. The focused validation and OOD cases are
+recorded in
+[`reports/prosody-comparison-validation-2026-08-13.md`](reports/prosody-comparison-validation-2026-08-13.md).
+
 ## Bind artifacts across runtimes
 
 Before comparing runtimes, write a local binding plan that names the source
