@@ -98,6 +98,32 @@ task-dependent. The six unflagged contrast samples are too few and too similar
 to validate false-positive behavior outside this retained long-form slice.
 Human listening and broader adversarial fixtures remain separate gates.
 
+## Version 0.39 instruction-overlap diagnostic
+
+A corrected CosyVoice3 `inference_instruct2` run exposed a fourth content
+failure. The style instruction was intended to condition delivery, but ASR
+hypotheses sometimes began with exact or garbled instruction words. WER marked
+the requested-text mismatch but could not attribute it to a spoken instruction.
+
+Version 0.39 adds an independent, plan-bound `spoken_instruction_overlap` flag.
+It constructs n-grams from the exact generation-plan instruction, removes
+n-grams also present in requested speech, and checks the remainder against the
+same NFKC and case-folded ASR tokens. Reports contain counts and bounded hashes,
+not raw instructions or hypotheses. The existing v1 report schema is extended
+additively so consumers that ignore unknown fields remain compatible.
+
+OOD fixtures cover exact leakage, requested-text collision exclusion, absent
+instructions, explicitly configured one-token instructions, full-width Unicode
+equivalence, invalid n-gram settings, and an aggregate instruction-token budget.
+The separate `not_applicable`, `no_exclusive_ngrams`, and `evaluated` statuses
+prevent absence or non-identifiability from being mistaken for a passed check.
+
+This remains a diagnostic, not an absence proof. ASR corruption can hide spoken
+instructions, and short or common phrases can create false positives. The
+thresholds must be frozen before a confirmatory decision. The corrected
+CosyVoice3 run is characterized separately in its model repo because it is a
+post-hoc discovery set for this new diagnostic.
+
 ## Version 0.38 adversarial hardening
 
 An OOD probe found that version 0.37 normalized n-grams with NFKC but passed raw
