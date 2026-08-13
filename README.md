@@ -409,6 +409,13 @@ instavar-voice-eval build-listening-assignment-plan evaluation/generation-plan.j
   --output evaluation/listening-assignment-plan.json
 ```
 
+A deliberately focused generation plan can leave some full-suite routes without
+samples. The default remains fail closed. For that explicit case, add
+`--allow-unmatched-routes-for-focused-plan`. Assignment schema 1.3 retains the
+complete routing, records `route_coverage_policy`, and lists every excluded
+criterion in `excluded_unmatched_criteria`. Excluded criteria do not appear in
+review assignments and cannot support a claim from that slice.
+
 The builder rejects unmatched criteria, candidate-specific or seed-specific
 text, instruction, category, or lexical-anchor drift, candidate-asymmetric
 coverage, duplicate samples, and any sample left without a criterion. The

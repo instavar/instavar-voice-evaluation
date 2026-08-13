@@ -507,9 +507,7 @@ class ListeningPackTests(unittest.TestCase):
             {
                 "scale": {"min": 1, "max": 5},
                 "presentation_log": [first_cell],
-                "ratings": [
-                    {"blind_id": first_cell["blind_id"], "criterion": first_cell["criterion"], "score": 3}
-                ],
+                "ratings": [{"blind_id": first_cell["blind_id"], "criterion": first_cell["criterion"], "score": 3}],
             },
             allow_incomplete=True,
         )
@@ -546,6 +544,22 @@ class ListeningPackTests(unittest.TestCase):
         unmatched["routes"][2]["categories"] = ["not_present"]
         with self.assertRaisesRegex(ValueError, "matches no"):
             build_listening_assignment_plan(generation_plan, unmatched)
+
+        focused = build_listening_assignment_plan(
+            generation_plan,
+            unmatched,
+            allow_unmatched_routes=True,
+        )
+        self.assertEqual(focused["route_coverage_policy"], "allow_unmatched_for_focused_plan")
+        self.assertEqual(focused["excluded_unmatched_criteria"], ["cadence"])
+        self.assertNotIn("cadence", focused["criteria"])
+        self.assertNotIn("cadence", focused["assignments"][0]["criteria"])
+        validation = validate_listening_assignment_plan(focused, generation_plan=generation_plan)
+        self.assertEqual(validation["criterion_count"], 2)
+
+        focused["route_coverage_policy"] = "require_every_route"
+        with self.assertRaisesRegex(ValueError, "self-hash"):
+            validate_listening_assignment_plan(focused, generation_plan=generation_plan)
 
         drifted = self.generation_plan()
         drifted["samples"][3]["category"] = "different_for_adapter"

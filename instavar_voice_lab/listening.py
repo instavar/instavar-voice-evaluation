@@ -11,7 +11,7 @@ from typing import Any
 
 from .metrics import bootstrap_mean_interval
 
-LISTENING_ASSIGNMENT_PLAN_SCHEMA_VERSION = "1.2.0"
+LISTENING_ASSIGNMENT_PLAN_SCHEMA_VERSION = "1.3.0"
 LISTENING_ROUTING_SCHEMA_VERSION = "1.1.0"
 LISTENING_PRESENTATION_SCHEDULE_SCHEMA_VERSION = "1.0.0"
 LISTENING_RATER_PACKET_SCHEMA_VERSION = "1.0.0"
@@ -73,9 +73,7 @@ def _normalized_routing(routing: Any) -> list[dict[str, Any]]:
                 raise ValueError(f"listening routing route {criterion} categories must be unique")
             normalized["categories"] = normalized_categories
         elif categories is not None:
-            raise ValueError(
-                f"listening routing route {criterion} categories require a category-based selector"
-            )
+            raise ValueError(f"listening routing route {criterion} categories require a category-based selector")
         routes.append(normalized)
     return routes
 
@@ -98,9 +96,7 @@ def _review_stimulus(raw: dict[str, Any], *, index: int) -> dict[str, Any]:
         seen_ids: set[str] = set()
         for anchor_index, anchor in enumerate(anchors):
             if not isinstance(anchor, dict):
-                raise ValueError(
-                    f"generation plan sample {index} lexical anchor {anchor_index} must be an object"
-                )
+                raise ValueError(f"generation plan sample {index} lexical anchor {anchor_index} must be an object")
             anchor_id = anchor.get("anchor_id")
             surface = anchor.get("surface")
             if not isinstance(anchor_id, str) or not anchor_id.strip():
@@ -169,7 +165,12 @@ def _generation_rows(generation_plan: Any) -> list[dict[str, Any]]:
     return rows
 
 
-def _assignment_payload(generation_plan: dict[str, Any], routing: dict[str, Any]) -> dict[str, Any]:
+def _assignment_payload(
+    generation_plan: dict[str, Any],
+    routing: dict[str, Any],
+    *,
+    allow_unmatched_routes: bool,
+) -> dict[str, Any]:
     rows = _generation_rows(generation_plan)
     routes = _normalized_routing(routing)
     assignments: list[dict[str, Any]] = []
@@ -205,11 +206,15 @@ def _assignment_payload(generation_plan: dict[str, Any], routing: dict[str, Any]
             }
         )
     candidate_ids = sorted({str(row["candidate_id"]) for row in rows})
+    excluded_unmatched_criteria: list[str] = []
     for route in routes:
         criterion = route["criterion"]
         matched = matched_by_criterion[criterion]
         if not matched:
-            raise ValueError(f"listening routing criterion matches no generation-plan samples: {criterion}")
+            if not allow_unmatched_routes:
+                raise ValueError(f"listening routing criterion matches no generation-plan samples: {criterion}")
+            excluded_unmatched_criteria.append(criterion)
+            continue
         target_sets = {
             candidate_id: {(prompt_id, seed) for candidate, prompt_id, seed in matched if candidate == candidate_id}
             for candidate_id in candidate_ids
@@ -217,29 +222,37 @@ def _assignment_payload(generation_plan: dict[str, Any], routing: dict[str, Any]
         if any(targets != target_sets[candidate_ids[0]] for targets in target_sets.values()):
             raise ValueError(f"listening routing criterion is candidate-asymmetric: {criterion}")
     normalized_routing = {"schema_version": LISTENING_ROUTING_SCHEMA_VERSION, "routes": routes}
+    active_routes = [route for route in routes if route["criterion"] not in excluded_unmatched_criteria]
     criterion_definitions = [
-        {
-            field: route[field]
-            for field in ("criterion", "direction", "review_prompt", "low_label", "high_label")
-        }
-        for route in routes
+        {field: route[field] for field in ("criterion", "direction", "review_prompt", "low_label", "high_label")}
+        for route in active_routes
     ]
     return {
         "schema_version": LISTENING_ASSIGNMENT_PLAN_SCHEMA_VERSION,
         "generation_plan_sha256": _digest(generation_plan),
-        "criteria": [route["criterion"] for route in routes],
+        "criteria": [route["criterion"] for route in active_routes],
         "criterion_definitions": criterion_definitions,
         "routing": normalized_routing,
+        "route_coverage_policy": (
+            "allow_unmatched_for_focused_plan" if allow_unmatched_routes else "require_every_route"
+        ),
+        "excluded_unmatched_criteria": excluded_unmatched_criteria,
         "assignments": assignments,
         "evidence_boundary": (
             "The artifact freezes which planned samples support each listening criterion. Its hashes do not prove "
-            "that it was created before generation without an external server-stamped chronology record."
+            "that it was created before generation without an external server-stamped chronology record. "
+            "Excluded unmatched criteria are not evaluated by this focused plan."
         ),
     }
 
 
-def build_listening_assignment_plan(generation_plan: dict[str, Any], routing: dict[str, Any]) -> dict[str, Any]:
-    payload = _assignment_payload(generation_plan, routing)
+def build_listening_assignment_plan(
+    generation_plan: dict[str, Any],
+    routing: dict[str, Any],
+    *,
+    allow_unmatched_routes: bool = False,
+) -> dict[str, Any]:
+    payload = _assignment_payload(generation_plan, routing, allow_unmatched_routes=allow_unmatched_routes)
     return {**payload, "assignment_plan_sha256": _digest(payload)}
 
 
@@ -258,7 +271,14 @@ def validate_listening_assignment_plan(
     payload = {key: value for key, value in plan.items() if key != "assignment_plan_sha256"}
     if not isinstance(claimed_hash, str) or claimed_hash != _digest(payload):
         raise ValueError("listening assignment plan self-hash does not match its content")
-    expected = build_listening_assignment_plan(generation_plan, plan.get("routing"))
+    policy = plan.get("route_coverage_policy")
+    if policy not in {"require_every_route", "allow_unmatched_for_focused_plan"}:
+        raise ValueError("listening assignment plan route_coverage_policy is invalid")
+    expected = build_listening_assignment_plan(
+        generation_plan,
+        plan.get("routing"),
+        allow_unmatched_routes=policy == "allow_unmatched_for_focused_plan",
+    )
     if plan != expected:
         raise ValueError("listening assignment plan does not match the supplied generation plan and routing")
     return {
@@ -314,9 +334,7 @@ def _presentation_schedule_audit(
         raise ValueError("counterbalance audit requires symmetric candidate coverage")
     block_count = len(block_keys)
     candidate_count = len(candidates)
-    position_counts = {
-        key: {candidate_id: [0] * candidate_count for candidate_id in candidates} for key in block_keys
-    }
+    position_counts = {key: {candidate_id: [0] * candidate_count for candidate_id in candidates} for key in block_keys}
     rater_pass_rows: list[dict[str, Any]] = []
     separations: list[int] = []
     for schedule_index, schedule in enumerate(schedules):
@@ -348,23 +366,17 @@ def _presentation_schedule_audit(
             if len(positions) != candidate_count:
                 raise ValueError(f"counterbalance audit schedule {schedule_index} has incomplete matched candidates")
             separations.extend(right - left for left, right in zip(positions, positions[1:]))
-        rater_pass_rows.append(
-            {"rater_id": schedule["rater_id"], "candidate_pass_counts": pass_counts}
-        )
+        rater_pass_rows.append({"rater_id": schedule["rater_id"], "candidate_pass_counts": pass_counts})
 
     position_rows = []
     imbalances: list[int] = []
     for prompt_id, seed_value in block_keys:
         counts = position_counts[(prompt_id, seed_value)]
-        position_rows.append(
-            {"prompt_id": prompt_id, "seed": seed_value, "candidate_position_counts": counts}
-        )
+        position_rows.append({"prompt_id": prompt_id, "seed": seed_value, "candidate_position_counts": counts})
         imbalances.extend(max(counts[candidate_id]) - min(counts[candidate_id]) for candidate_id in candidates)
     max_imbalance = max(imbalances, default=0)
     pass_imbalances = [
-        max(counts) - min(counts)
-        for row in rater_pass_rows
-        for counts in row["candidate_pass_counts"].values()
+        max(counts) - min(counts) for row in rater_pass_rows for counts in row["candidate_pass_counts"].values()
     ]
     max_pass_imbalance = max(pass_imbalances, default=0)
     if max_imbalance > 1 or max_pass_imbalance > 1:
@@ -434,9 +446,7 @@ def _counterbalanced_presentation_schedules(
     expected_candidates = set(candidates)
     for prompt_id, seed_value in sorted(groups):
         if set(groups[(prompt_id, seed_value)]) != expected_candidates:
-            raise ValueError(
-                f"counterbalanced presentation requires symmetric candidates for {prompt_id}/{seed_value}"
-            )
+            raise ValueError(f"counterbalanced presentation requires symmetric candidates for {prompt_id}/{seed_value}")
 
     block_keys = sorted(groups)
     stable_block_indexes = {key: index for index, key in enumerate(block_keys)}
@@ -478,8 +488,7 @@ def _validate_presentation_schedules(
         return None
     if review.get("presentation_schedule_schema_version") != LISTENING_PRESENTATION_SCHEDULE_SCHEMA_VERSION:
         raise ValueError(
-            "review presentation_schedule_schema_version must equal "
-            f"{LISTENING_PRESENTATION_SCHEDULE_SCHEMA_VERSION}"
+            f"review presentation_schedule_schema_version must equal {LISTENING_PRESENTATION_SCHEDULE_SCHEMA_VERSION}"
         )
     if not isinstance(raw_schedules, list) or not raw_schedules:
         raise ValueError("review presentation_schedules must be a non-empty array")
@@ -508,9 +517,7 @@ def _validate_presentation_schedules(
             raise ValueError(f"review presentation schedule {index} criterion_orders must cover every criterion")
         for criterion in criteria:
             expected_order = [
-                blind_id
-                for blind_id in sample_order
-                if criterion in review_by_id[blind_id].get("criteria", criteria)
+                blind_id for blind_id in sample_order if criterion in review_by_id[blind_id].get("criteria", criteria)
             ]
             if criterion_orders[criterion] != expected_order:
                 raise ValueError(
@@ -588,9 +595,7 @@ def _validate_rater_packet(packet: Any) -> tuple[str, dict[str, list[str]]]:
     ):
         raise ValueError("rater packet must contain sample_order and samples")
     sample_by_id = {
-        row.get("blind_id"): row
-        for row in samples
-        if isinstance(row, dict) and isinstance(row.get("blind_id"), str)
+        row.get("blind_id"): row for row in samples if isinstance(row, dict) and isinstance(row.get("blind_id"), str)
     }
     if len(sample_by_id) != len(samples) or sample_order != [row.get("blind_id") for row in samples]:
         raise ValueError("rater packet samples must exactly follow sample_order")
@@ -688,9 +693,7 @@ def build_rater_submission(
             raise ValueError(f"duplicate rater rating for sample and criterion: {key}")
         seen.add(key)
         normalized_ratings.append({"blind_id": blind_id, "criterion": criterion, "score": score})
-    rating_positions = {
-        (row["blind_id"], row["criterion"]): index for index, row in enumerate(rating_order)
-    }
+    rating_positions = {(row["blind_id"], row["criterion"]): index for index, row in enumerate(rating_order)}
     normalized_ratings.sort(key=lambda row: rating_positions[(row["blind_id"], row["criterion"])])
     expected = {(row["blind_id"], row["criterion"]) for row in rating_order}
     missing = sorted(expected - seen)
@@ -1188,9 +1191,7 @@ def aggregate_listening_results(
         for criterion, values_by_item in sorted(agreement_values.items())
     }
     review_by_id = {
-        row["blind_id"]: row
-        for row in review.get("samples", [])
-        if isinstance(row, dict) and "blind_id" in row
+        row["blind_id"]: row for row in review.get("samples", []) if isinstance(row, dict) and "blind_id" in row
     }
     per_sample = []
     for (blind_id, criterion), values in sorted(sample_values.items()):

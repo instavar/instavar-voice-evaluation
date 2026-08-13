@@ -240,6 +240,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     listening_assignments.add_argument("generation_plan", type=Path)
     listening_assignments.add_argument("--routing", type=Path, required=True)
+    listening_assignments.add_argument(
+        "--allow-unmatched-routes-for-focused-plan",
+        action="store_true",
+        help="record and exclude routing criteria that have no samples in an intentionally focused plan",
+    )
     listening_assignments.add_argument("--output", type=Path, required=True)
 
     rater_packet = commands.add_parser(
@@ -773,6 +778,7 @@ def main(argv: list[str] | None = None) -> int:
             result = build_listening_assignment_plan(
                 _read_json(args.generation_plan),
                 _read_json(args.routing),
+                allow_unmatched_routes=args.allow_unmatched_routes_for_focused_plan,
             )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             print(error, file=sys.stderr)
