@@ -151,6 +151,12 @@ listening. `eligible_for_long_form` means only that the WAV meets the default
 30-second analysis duration; it is not a quality gate. Mono uncompressed PCM is
 required so channel mixing cannot silently change the result.
 
+Implementation `bdefbd76101653b2d05cc97d863f66b421316652` passed hosted
+Quality run `31662790912` on 2026-08-13. A 120-second 48 kHz synthetic control
+completed locally in 1.76 seconds with about 30 MB maximum resident memory.
+These controls do not establish correlation with human cadence or monotony
+ratings; that requires matched real speech and blinded listening.
+
 ## Bind artifacts across runtimes
 
 Before comparing runtimes, write a local binding plan that names the source
