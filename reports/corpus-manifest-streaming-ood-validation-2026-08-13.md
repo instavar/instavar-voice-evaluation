@@ -44,7 +44,8 @@ The complete dependency-free suite passed 226 tests locally. Focused Ruff E/F
 and formatter checks passed, and `uv build` produced the 0.42 source
 distribution and wheel. Implementation commit
 `16414af7996e01d715d218b15d5ad2bd4905b198` contains the bounded streaming
-contract and its OOD tests.
+contract and its OOD tests. The public main revision passed hosted Quality run
+`31684791555`.
 
 ## Scope and boundary
 
