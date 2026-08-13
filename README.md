@@ -391,8 +391,16 @@ referenced audio files exist, but it does not decode every audio format, detect
 near-duplicate recordings, identify the same speaker across different clips,
 or prove that the transcript matches the recording.
 
+Version 0.42 emits corpus-audit schema 1.1 and hashes and parses each JSONL
+manifest through the same open descriptor. It rejects replacement or mutation
+during the audit, malformed UTF-8, manifests above 512 MiB, and logical JSONL
+lines above 8 MiB. The Python API can tighten those two limits but cannot raise
+them above the defaults. The CLI intentionally exposes no relaxation flags.
+
 Implementation and OOD validation are recorded in
 [`reports/corpus-content-leakage-ood-validation-2026-08-13.md`](reports/corpus-content-leakage-ood-validation-2026-08-13.md).
+Manifest streaming and mutation validation are recorded in
+[`reports/corpus-manifest-streaming-ood-validation-2026-08-13.md`](reports/corpus-manifest-streaming-ood-validation-2026-08-13.md).
 
 Bind audited raw splits to model-ready artifacts with a content-addressed lineage receipt:
 
