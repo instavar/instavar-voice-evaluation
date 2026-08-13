@@ -33,10 +33,14 @@ def _normalized_phrase(value: str) -> str:
 def _phrase_occurrence_count(text: str, phrase: str) -> int:
     text_tokens = _normalized_phrase(text).split()
     phrase_tokens = _normalized_phrase(phrase).split()
-    return sum(
-        text_tokens[index : index + len(phrase_tokens)] == phrase_tokens
-        for index in range(len(text_tokens) - len(phrase_tokens) + 1)
-    ) if phrase_tokens else 0
+    return (
+        sum(
+            text_tokens[index : index + len(phrase_tokens)] == phrase_tokens
+            for index in range(len(text_tokens) - len(phrase_tokens) + 1)
+        )
+        if phrase_tokens
+        else 0
+    )
 
 
 def validate_prompt_pack(document: Any) -> list[str]:
@@ -139,17 +143,12 @@ def validate_prompt_pack(document: Any) -> list[str]:
                 elif isinstance(value.get("text"), str):
                     surface_count = _phrase_occurrence_count(value["text"], surface)
                     if surface_count != 1:
-                        errors.append(
-                            f"{anchor_path}.surface must occur exactly once as a token phrase in prompt text"
-                        )
+                        errors.append(f"{anchor_path}.surface must occur exactly once as a token phrase in prompt text")
                 accepted = anchor.get("accepted_asr_forms")
                 if not isinstance(accepted, list) or not accepted:
                     errors.append(f"{anchor_path}.accepted_asr_forms must be a non-empty array")
                     continue
-                normalized_forms = [
-                    _normalized_phrase(form) if isinstance(form, str) else ""
-                    for form in accepted
-                ]
+                normalized_forms = [_normalized_phrase(form) if isinstance(form, str) else "" for form in accepted]
                 if any(not form for form in normalized_forms):
                     errors.append(f"{anchor_path}.accepted_asr_forms must contain token-bearing strings")
                     continue
@@ -183,9 +182,7 @@ def validate_prompt_pack(document: Any) -> list[str]:
     duplicates = sorted(prompt_id for prompt_id, count in Counter(prompt_ids).items() if count > 1)
     if duplicates:
         errors.append(f"prompt ids must be unique: {', '.join(duplicates)}")
-    duplicate_anchors = sorted(
-        anchor_id for anchor_id, count in Counter(lexical_anchor_ids).items() if count > 1
-    )
+    duplicate_anchors = sorted(anchor_id for anchor_id, count in Counter(lexical_anchor_ids).items() if count > 1)
     if duplicate_anchors:
         errors.append(f"lexical anchor ids must be unique across prompts: {', '.join(duplicate_anchors)}")
     if "long_form_cadence" not in categories:
@@ -204,9 +201,7 @@ def validate_prompt_pack(document: Any) -> list[str]:
     objective_metrics = document.get("objective_metrics")
     if isinstance(objective_metrics, list):
         unsupported = sorted(
-            value
-            for value in objective_metrics
-            if isinstance(value, str) and value not in SUPPORTED_OBJECTIVE_METRICS
+            value for value in objective_metrics if isinstance(value, str) and value not in SUPPORTED_OBJECTIVE_METRICS
         )
         if unsupported:
             errors.append(f"objective_metrics contains unsupported metrics: {', '.join(unsupported)}")
@@ -218,6 +213,7 @@ def build_generation_plan(
     candidate_ids: Iterable[str],
     *,
     seeds: Iterable[int] | None = None,
+    prompt_ids: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     errors = validate_prompt_pack(prompt_pack)
     if errors:
@@ -240,9 +236,20 @@ def build_generation_plan(
     if len(set(frozen_seeds)) != len(frozen_seeds):
         raise ValueError("seeds must be unique")
 
+    prompts_by_id = {prompt["id"]: prompt for prompt in prompt_pack["prompts"]}
+    selected_prompt_ids = list(prompts_by_id if prompt_ids is None else prompt_ids)
+    if not selected_prompt_ids:
+        raise ValueError("at least one prompt id is required")
+    if len(set(selected_prompt_ids)) != len(selected_prompt_ids):
+        raise ValueError("prompt ids must be unique")
+    unknown_prompt_ids = [prompt_id for prompt_id in selected_prompt_ids if prompt_id not in prompts_by_id]
+    if unknown_prompt_ids:
+        raise ValueError(f"unknown prompt ids: {', '.join(unknown_prompt_ids)}")
+    selected_prompts = [prompts_by_id[prompt_id] for prompt_id in selected_prompt_ids]
+
     samples: list[dict[str, Any]] = []
     for candidate_id in candidates:
-        for prompt in prompt_pack["prompts"]:
+        for prompt in selected_prompts:
             for seed in frozen_seeds:
                 sample_id = f"{candidate_id}--{prompt['id']}--seed-{seed}"
                 row = {
@@ -276,7 +283,8 @@ def build_generation_plan(
         },
         "candidate_ids": candidates,
         "seeds": frozen_seeds,
-        "prompt_count": len(prompt_pack["prompts"]),
+        "selected_prompt_ids": selected_prompt_ids,
+        "prompt_count": len(selected_prompts),
         "sample_count": len(samples),
         "required_objective_metrics": list(prompt_pack["objective_metrics"]),
         "samples": samples,
@@ -367,13 +375,7 @@ def check_suite_coverage(plan: Any, observations: Any) -> dict[str, Any]:
             "invalid": sum(sample_id in invalid for sample_id in category_ids),
         }
 
-    coverage_complete = (
-        not missing
-        and not unexpected
-        and not duplicates
-        and not mismatched
-        and malformed_count == 0
-    )
+    coverage_complete = not missing and not unexpected and not duplicates and not mismatched and malformed_count == 0
     return {
         "schema_version": "1.0.0",
         "status": "passed" if coverage_complete else "failed",

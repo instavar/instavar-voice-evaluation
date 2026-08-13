@@ -44,6 +44,23 @@ instavar-voice-eval build-generation-plan reference/singapore-english-v1.json \
   --output evaluation/generation-plan.json
 ```
 
+For a bounded preregistered slice, repeat `--prompt` with exact prompt IDs from
+the validated source pack and optionally repeat `--seed`:
+
+```bash
+instavar-voice-eval build-generation-plan reference/singapore-english-v1.json \
+  --candidate base-model \
+  --candidate selected-adapter \
+  --prompt cadence-two-minute \
+  --seed 20260812 \
+  --output evaluation/long-form-plan.json
+```
+
+The builder validates the complete source pack before selecting prompts, binds
+the complete pack hash, and records `selected_prompt_ids`. Unknown, duplicate,
+or empty selections fail closed. A focused slice reduces execution cost but
+does not establish full-suite coverage.
+
 After every attempt has an objective-observation row, verify coverage:
 
 ```bash

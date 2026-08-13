@@ -560,6 +560,11 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("prompt_pack", type=Path)
     plan.add_argument("--candidate", action="append", required=True)
     plan.add_argument("--seed", action="append", type=int)
+    plan.add_argument(
+        "--prompt",
+        action="append",
+        help="include one prompt id from the validated source pack; repeat for a focused slice",
+    )
     plan.add_argument("--output", type=Path, required=True)
 
     coverage = commands.add_parser("check-suite-coverage", help="fail when planned samples lack observations")
@@ -1155,6 +1160,7 @@ def main(argv: list[str] | None = None) -> int:
                 _read_json(args.prompt_pack),
                 args.candidate,
                 seeds=args.seed,
+                prompt_ids=args.prompt,
             )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             print(error, file=sys.stderr)

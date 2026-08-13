@@ -23,6 +23,7 @@ class SuiteTests(unittest.TestCase):
         self.assertEqual(first["prompt_count"], 7)
         self.assertEqual(first["sample_count"], 42)
         self.assertEqual(first["schema_version"], "1.1.0")
+        self.assertEqual(first["selected_prompt_ids"], [prompt["id"] for prompt in self.prompt_pack()["prompts"]])
         self.assertEqual(first["required_objective_metrics"], self.prompt_pack()["objective_metrics"])
         self.assertEqual(len({row["sample_id"] for row in first["samples"]}), 42)
         local_rows = [row for row in first["samples"] if row["prompt_id"] == "local-context"]
@@ -32,6 +33,31 @@ class SuiteTests(unittest.TestCase):
             local_rows[0]["lexical_anchors"][0]["accepted_asr_forms"],
             ["paiseh", "pai seh", "pie say"],
         )
+
+    def test_generation_plan_can_preregister_a_focused_prompt_slice(self) -> None:
+        prompt_pack = self.prompt_pack()
+        full_hash = build_generation_plan(prompt_pack, ["base"], seeds=[42])["prompt_pack"]["sha256"]
+        plan = build_generation_plan(
+            prompt_pack,
+            ["base", "adapter"],
+            seeds=[20260812],
+            prompt_ids=["cadence-two-minute"],
+        )
+        self.assertEqual(plan["prompt_pack"]["sha256"], full_hash)
+        self.assertEqual(plan["selected_prompt_ids"], ["cadence-two-minute"])
+        self.assertEqual(plan["prompt_count"], 1)
+        self.assertEqual(plan["sample_count"], 2)
+        self.assertEqual({row["prompt_id"] for row in plan["samples"]}, {"cadence-two-minute"})
+
+    def test_generation_plan_rejects_empty_duplicate_or_unknown_prompt_selection(self) -> None:
+        for prompt_ids, message in (
+            ([], "at least one prompt id is required"),
+            (["neutral-brief", "neutral-brief"], "prompt ids must be unique"),
+            (["not-in-pack"], "unknown prompt ids: not-in-pack"),
+        ):
+            with self.subTest(prompt_ids=prompt_ids):
+                with self.assertRaisesRegex(ValueError, message):
+                    build_generation_plan(self.prompt_pack(), ["base"], prompt_ids=prompt_ids)
 
     def test_coverage_preserves_invalid_outputs_as_evidence(self) -> None:
         plan = build_generation_plan(self.prompt_pack(), ["adapter"], seeds=[42])
@@ -54,10 +80,7 @@ class SuiteTests(unittest.TestCase):
 
     def test_coverage_fails_on_missing_or_duplicate_observations(self) -> None:
         plan = build_generation_plan(self.prompt_pack(), ["adapter"], seeds=[42])
-        observations = [
-            {"sample_id": row["sample_id"], "valid": True}
-            for row in plan["samples"][:-1]
-        ]
+        observations = [{"sample_id": row["sample_id"], "valid": True} for row in plan["samples"][:-1]]
         observations.append(dict(observations[0]))
         result = check_suite_coverage(plan, observations)
         self.assertEqual(result["status"], "failed")
