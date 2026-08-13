@@ -61,6 +61,18 @@
       "sample_rate_hz": { "type": "integer", "minimum": 1 },
       "silence_fraction": { "type": "number", "minimum": 0, "maximum": 1 },
       "clipping_fraction": { "type": "number", "minimum": 0, "maximum": 1 },
+      "prosody_analysis_duration_seconds": { "type": "number", "exclusiveMinimum": 0 },
+      "prosody_eligible_for_long_form": { "type": "boolean" },
+      "prosody_active_frame_fraction": { "type": "number", "minimum": 0, "maximum": 1 },
+      "prosody_active_rms_db_std": { "type": ["number", "null"], "minimum": 0 },
+      "prosody_window_rms_db_std": { "type": ["number", "null"], "minimum": 0 },
+      "prosody_zero_crossing_rate_hz_std": { "type": ["number", "null"], "minimum": 0 },
+      "prosody_pause_rate_per_minute": { "type": "number", "minimum": 0 },
+      "prosody_pause_fraction": { "type": "number", "minimum": 0, "maximum": 1 },
+      "prosody_pause_duration_cv": { "type": ["number", "null"], "minimum": 0 },
+      "prosody_phrase_duration_cv": { "type": ["number", "null"], "minimum": 0 },
+      "prosody_leading_inactive_seconds": { "type": "number", "minimum": 0 },
+      "prosody_trailing_inactive_seconds": { "type": "number", "minimum": 0 },
       "evidence": { "type": "object" }
     },
     "dependentRequired": {

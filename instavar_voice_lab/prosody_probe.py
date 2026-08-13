@@ -9,6 +9,20 @@ from .audio_probe import _decode_samples
 
 
 PROSODY_PROXY_SCHEMA_VERSION = "instavar_voice_prosody_proxy/v1"
+PROSODY_OBSERVATION_FIELDS = {
+    "prosody_active_frame_fraction",
+    "prosody_active_rms_db_std",
+    "prosody_analysis_duration_seconds",
+    "prosody_eligible_for_long_form",
+    "prosody_leading_inactive_seconds",
+    "prosody_pause_duration_cv",
+    "prosody_pause_fraction",
+    "prosody_pause_rate_per_minute",
+    "prosody_phrase_duration_cv",
+    "prosody_trailing_inactive_seconds",
+    "prosody_window_rms_db_std",
+    "prosody_zero_crossing_rate_hz_std",
+}
 PROXY_FIELDS = (
     "active_frame_fraction",
     "active_rms_db_std",
@@ -275,3 +289,28 @@ def compare_prosody_proxies(reference: Path, candidate: Path) -> dict[str, objec
             "Proxy deltas prioritize review and do not establish a perceptual difference or cause."
         ),
     }
+
+
+def prosody_observation_values(probe: dict[str, object]) -> dict[str, object]:
+    if probe.get("schema_version") != PROSODY_PROXY_SCHEMA_VERSION or probe.get("status") != "complete":
+        raise ValueError("a complete supported prosody proxy is required")
+    metrics = probe.get("metrics")
+    if not isinstance(metrics, dict):
+        raise ValueError("prosody proxy metrics must be an object")
+    values = {
+        "prosody_active_frame_fraction": metrics["active_frame_fraction"],
+        "prosody_active_rms_db_std": metrics["active_rms_db_std"],
+        "prosody_analysis_duration_seconds": metrics["analysis_duration_seconds"],
+        "prosody_eligible_for_long_form": metrics["eligible_for_long_form"],
+        "prosody_leading_inactive_seconds": metrics["leading_inactive_seconds"],
+        "prosody_pause_duration_cv": metrics["pause_duration_cv"],
+        "prosody_pause_fraction": metrics["pause_fraction"],
+        "prosody_pause_rate_per_minute": metrics["pause_rate_per_minute"],
+        "prosody_phrase_duration_cv": metrics["phrase_duration_cv"],
+        "prosody_trailing_inactive_seconds": metrics["trailing_inactive_seconds"],
+        "prosody_window_rms_db_std": metrics["window_rms_db_std"],
+        "prosody_zero_crossing_rate_hz_std": metrics["zero_crossing_rate_hz_std"],
+    }
+    if set(values) != PROSODY_OBSERVATION_FIELDS:
+        raise AssertionError("prosody observation field mapping is incomplete")
+    return values

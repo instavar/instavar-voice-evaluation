@@ -157,6 +157,28 @@ completed locally in 1.76 seconds with about 30 MB maximum resident memory.
 These controls do not establish correlation with human cadence or monotony
 ratings; that requires matched real speech and blinded listening.
 
+For a batch that can be joined to the objective observation pipeline, bind every
+proxy row to the source observation document, live audio bytes, and exact probe
+implementation:
+
+```bash
+instavar-voice-eval build-prosody-proxy-results observations.json \
+  --audio-base-dir evaluation/audio \
+  --extractor-revision <immutable-evaluator-revision> \
+  --output evaluation/prosody-results.json
+
+instavar-voice-eval apply-extractor-results \
+  observations.json evaluation/prosody-results.json \
+  --audio-base-dir evaluation/audio \
+  --output evaluation/observations-with-prosody.json
+```
+
+Extractor schema 1.6 records the probe and shared PCM decoder hashes. Applying
+the receipt rechecks the observation document and each live WAV hash, refuses
+field or evidence overwrite, and retains insufficient-activity rows as explicit
+extractor failures. Content binding makes the measurements attributable; it
+does not upgrade proxy measurements into perceptual evidence.
+
 ## Bind artifacts across runtimes
 
 Before comparing runtimes, write a local binding plan that names the source

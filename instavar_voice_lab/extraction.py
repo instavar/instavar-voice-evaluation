@@ -12,6 +12,7 @@ from typing import Any
 from .audio_probe import probe_wav
 from .lineage import KINDS, fingerprint_artifact
 from .observations import validate_objective_observations
+from .prosody_probe import PROSODY_OBSERVATION_FIELDS, probe_prosody_proxy, prosody_observation_values
 from .speaker_reference_plans import (
     speaker_reference_assignment_sha256,
     validate_speaker_reference_assignment_plan,
@@ -31,19 +32,23 @@ MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION = "1.2.0"
 PLANNED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION = "1.3.0"
 EXECUTED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION = "1.4.0"
 EXECUTED_ASR_EXTRACTION_SCHEMA_VERSION = "1.5.0"
+PROSODY_EXTRACTION_SCHEMA_VERSION = "1.6.0"
 EXTRACTION_SCHEMA_VERSIONS = {
     EXTRACTION_SCHEMA_VERSION,
     MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
     PLANNED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
     EXECUTED_MULTI_REFERENCE_EXTRACTION_SCHEMA_VERSION,
     EXECUTED_ASR_EXTRACTION_SCHEMA_VERSION,
+    PROSODY_EXTRACTION_SCHEMA_VERSION,
 }
 EXTRACTOR_FIELDS = {
     "asr": {"hypothesis_text"},
     "speaker_encoder": {"reference_speaker_embedding", "speaker_embedding"},
     "audio_probe": {"sample_rate_hz", "silence_fraction", "clipping_fraction"},
+    "prosody_proxy": PROSODY_OBSERVATION_FIELDS,
 }
 BUILTIN_AUDIO_PROBE_NAME = "instavar_voice_lab.audio_probe"
+BUILTIN_PROSODY_PROXY_NAME = "instavar_voice_lab.prosody_probe"
 
 
 def _canonical_sha256(value: Any) -> str:
@@ -181,6 +186,13 @@ def _builtin_audio_probe_artifacts() -> dict[str, tuple[Path, str]]:
     return {"implementation": (Path(__file__).with_name("audio_probe.py"), "file")}
 
 
+def _builtin_prosody_proxy_artifacts() -> dict[str, tuple[Path, str]]:
+    return {
+        "implementation": (Path(__file__).with_name("prosody_probe.py"), "file"),
+        "pcm_decoder": (Path(__file__).with_name("audio_probe.py"), "file"),
+    }
+
+
 def verify_observation_audio(row: dict[str, Any], base_dir: Path, index: int) -> tuple[Path, str]:
     raw_path = row.get("audio_path")
     expected_sha = row.get("audio_sha256")
@@ -283,6 +295,31 @@ def _validate_values(
         ):
             raise ValueError(f"speaker embeddings must contain finite numbers for sample_id: {sample_id}")
         return
+    if kind == "prosody_proxy":
+        boolean = values["prosody_eligible_for_long_form"]
+        if not isinstance(boolean, bool):
+            raise ValueError(f"prosody_eligible_for_long_form must be boolean for sample_id: {sample_id}")
+        bounded = {"prosody_active_frame_fraction", "prosody_pause_fraction"}
+        nullable = {
+            "prosody_active_rms_db_std",
+            "prosody_pause_duration_cv",
+            "prosody_phrase_duration_cv",
+            "prosody_window_rms_db_std",
+            "prosody_zero_crossing_rate_hz_std",
+        }
+        for name, value in values.items():
+            if name == "prosody_eligible_for_long_form" or value is None and name in nullable:
+                continue
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) < 0
+            ):
+                raise ValueError(f"{name} must be a finite non-negative number for sample_id: {sample_id}")
+            if name in bounded and float(value) > 1:
+                raise ValueError(f"{name} must be between zero and one for sample_id: {sample_id}")
+        return
     sample_rate = values["sample_rate_hz"]
     silence = values["silence_fraction"]
     clipping = values["clipping_fraction"]
@@ -346,6 +383,51 @@ def build_audio_probe_results(
     }
 
 
+def build_prosody_probe_results(
+    observations: Any,
+    *,
+    audio_base_dir: Path,
+    extractor_revision: str,
+) -> dict[str, Any]:
+    rows = _validated_source_rows(observations)
+    extractor = build_extractor_identity(
+        kind="prosody_proxy",
+        name=BUILTIN_PROSODY_PROXY_NAME,
+        revision=extractor_revision,
+        artifacts=_builtin_prosody_proxy_artifacts(),
+    )
+    results: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        if row["valid"] is not True:
+            continue
+        path, audio_sha = verify_observation_audio(row, audio_base_dir, index)
+        result: dict[str, Any] = {
+            "sample_id": row["sample_id"],
+            "audio_sha256": audio_sha,
+            "status": "complete",
+        }
+        try:
+            probe = probe_prosody_proxy(path)
+            if probe["status"] != "complete":
+                raise ValueError("prosody proxy found fewer than five active frames")
+            result["values"] = prosody_observation_values(probe)
+        except (OSError, ValueError, EOFError, wave.Error) as error:
+            result.update(
+                {
+                    "status": "failed",
+                    "error_type": type(error).__name__,
+                    "error": str(error),
+                }
+            )
+        results.append(result)
+    return {
+        "schema_version": PROSODY_EXTRACTION_SCHEMA_VERSION,
+        "source_observations_sha256": observation_document_sha256(rows),
+        "extractor": extractor,
+        "results": results,
+    }
+
+
 def apply_extractor_results(
     observations: Any,
     extraction: Any,
@@ -379,12 +461,18 @@ def apply_extractor_results(
         raise ValueError("schema 1.4 extractor results are reserved for executed speaker-encoder evidence")
     if extraction_version == EXECUTED_ASR_EXTRACTION_SCHEMA_VERSION and kind != "asr":
         raise ValueError("schema 1.5 extractor results are reserved for executed ASR evidence")
+    if extraction_version == PROSODY_EXTRACTION_SCHEMA_VERSION and kind != "prosody_proxy":
+        raise ValueError("schema 1.6 extractor results are reserved for prosody proxy evidence")
+    if kind == "prosody_proxy" and extraction_version != PROSODY_EXTRACTION_SCHEMA_VERSION:
+        raise ValueError("prosody proxy evidence requires extractor schema 1.6")
     if not isinstance(name, str) or not name.strip():
         raise ValueError("extractor name must be non-empty")
     revision = _immutable_revision(revision)
     if extractor_artifacts is None:
         if kind == "audio_probe" and name.strip() == BUILTIN_AUDIO_PROBE_NAME:
             extractor_artifacts = _builtin_audio_probe_artifacts()
+        elif kind == "prosody_proxy" and name.strip() == BUILTIN_PROSODY_PROXY_NAME:
+            extractor_artifacts = _builtin_prosody_proxy_artifacts()
         else:
             raise ValueError("external extractor artifacts are required for live identity verification")
     expected_extractor = build_extractor_identity(

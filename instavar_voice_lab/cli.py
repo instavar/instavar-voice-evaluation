@@ -15,6 +15,7 @@ from .extraction import (
     EXTRACTOR_FIELDS,
     apply_extractor_results,
     build_audio_probe_results,
+    build_prosody_probe_results,
     build_extractor_identity,
     build_speaker_reference_binding,
     build_speaker_reference_catalog,
@@ -300,6 +301,15 @@ def build_parser() -> argparse.ArgumentParser:
     audio_probe_results.add_argument("--audio-base-dir", type=Path, required=True)
     audio_probe_results.add_argument("--extractor-revision", required=True)
     audio_probe_results.add_argument("--output", type=Path, required=True)
+
+    prosody_probe_results = commands.add_parser(
+        "build-prosody-proxy-results",
+        help="probe live WAV files and bind prosody proxy rows to observation and audio hashes",
+    )
+    prosody_probe_results.add_argument("observations", type=Path)
+    prosody_probe_results.add_argument("--audio-base-dir", type=Path, required=True)
+    prosody_probe_results.add_argument("--extractor-revision", required=True)
+    prosody_probe_results.add_argument("--output", type=Path, required=True)
 
     extractor_identity = commands.add_parser(
         "build-extractor-identity",
@@ -815,6 +825,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "build-audio-probe-results":
         try:
             result = build_audio_probe_results(
+                _read_json(args.observations),
+                audio_base_dir=args.audio_base_dir,
+                extractor_revision=args.extractor_revision,
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0
+    if args.command == "build-prosody-proxy-results":
+        try:
+            result = build_prosody_probe_results(
                 _read_json(args.observations),
                 audio_base_dir=args.audio_base_dir,
                 extractor_revision=args.extractor_revision,

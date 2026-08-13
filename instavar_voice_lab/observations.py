@@ -98,6 +98,43 @@ def validate_objective_observations(
             ):
                 errors.append(f"{path}.{name} must be a finite number when present")
 
+        prosody_nullable = {
+            "prosody_active_rms_db_std",
+            "prosody_pause_duration_cv",
+            "prosody_phrase_duration_cv",
+            "prosody_window_rms_db_std",
+            "prosody_zero_crossing_rate_hz_std",
+        }
+        prosody_bounded = {"prosody_active_frame_fraction", "prosody_pause_fraction"}
+        prosody_fields = {
+            "prosody_analysis_duration_seconds",
+            "prosody_active_frame_fraction",
+            "prosody_active_rms_db_std",
+            "prosody_leading_inactive_seconds",
+            "prosody_pause_duration_cv",
+            "prosody_pause_fraction",
+            "prosody_pause_rate_per_minute",
+            "prosody_phrase_duration_cv",
+            "prosody_trailing_inactive_seconds",
+            "prosody_window_rms_db_std",
+            "prosody_zero_crossing_rate_hz_std",
+        }
+        for name in prosody_fields:
+            number = value.get(name)
+            if number is None and (name not in value or name in prosody_nullable):
+                continue
+            if (
+                isinstance(number, bool)
+                or not isinstance(number, (int, float))
+                or not math.isfinite(float(number))
+                or float(number) < 0
+                or name in prosody_bounded and float(number) > 1
+            ):
+                errors.append(f"{path}.{name} must be a finite non-negative number in its allowed range")
+        eligible = value.get("prosody_eligible_for_long_form")
+        if eligible is not None and not isinstance(eligible, bool):
+            errors.append(f"{path}.prosody_eligible_for_long_form must be a boolean when present")
+
         evidence = value.get("evidence")
         if evidence is not None and not isinstance(evidence, dict):
             errors.append(f"{path}.evidence must be an object when present")
