@@ -33,8 +33,11 @@ Dependency-free tests cover:
 - recording-group leakage; and
 - missing split and missing group metadata failures.
 
-The complete dependency-free suite passed 221 tests locally. Package build and
-hosted CI are recorded with the release commit after publication.
+The complete dependency-free suite passed 221 tests locally. `uv build`
+produced the 0.41 source distribution and wheel, and focused Ruff E/F checks
+passed. Implementation commit
+`0372dec202fca23386ab5cf3018ec425c5e60c13` passed hosted Quality run
+`31682337739` on 2026-08-13.
 
 ## Scope and boundary
 
