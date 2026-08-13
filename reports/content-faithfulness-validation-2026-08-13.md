@@ -97,3 +97,20 @@ Common exact phrases can create false overlap. WER and thresholds remain
 task-dependent. The six unflagged contrast samples are too few and too similar
 to validate false-positive behavior outside this retained long-form slice.
 Human listening and broader adversarial fixtures remain separate gates.
+
+## Version 0.38 adversarial hardening
+
+An OOD probe found that version 0.37 normalized n-grams with NFKC but passed raw
+text to the shared WER function. A full-width rendering of the exact requested
+sentence therefore produced WER `1.0` even though its normalized tokens were
+identical. Version 0.38 computes both diagnostics from the same NFKC and
+case-folded tokens; the regression fixture now produces WER `0`.
+
+Version 0.38 also fails closed on tokenless requested text, diagnostic text over
+64 KiB, more than 4,096 normalized tokens in one requested or hypothesis text,
+and more than 20 million aggregate WER matrix cells in one report. A two-token
+reference leak remains detectable when the caller explicitly preregisters
+two-grams and a one-hit threshold. These tests improve normalization and
+resource-exhaustion behavior. They do not solve the documented limitations of
+exact token n-grams or retrospectively preregister the real-artifact thresholds
+above.

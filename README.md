@@ -798,7 +798,7 @@ host or prove that the dependency behaved honestly.
 
 Audio can pass duration, clipping, silence, and file-validity checks while the
 spoken content repeats, omits requested words, or includes text from the
-conditioning transcript. Version 0.37 adds a deterministic diagnostic that
+conditioning transcript. Version 0.38 provides a deterministic diagnostic that
 binds three separate inputs: the exact requested text in the generation plan,
 the content-addressed ASR hypothesis in the observation, and the retained
 reference transcript selected by the frozen speaker-reference assignment.
@@ -825,6 +825,14 @@ extractor artifacts. It excludes reference n-grams that also occur in the
 requested text, so correctly speaking shared words is not mislabeled as
 reference leakage. Stable hashes identify hit n-grams without copying their raw
 text into the report. Those hashes are audit labels, not anonymization.
+
+Requested and ASR hypothesis text use the same NFKC and case-folded token
+normalization for WER and n-gram checks. Each diagnostic text is limited to 64
+KiB and 4,096 normalized tokens, and one report is limited to 20 million total
+WER matrix cells. These fail-closed limits prevent malformed plans or unusually
+large ASR output from turning the dependency-free edit-distance calculation
+into unbounded work. An empty ASR hypothesis remains evaluable as a complete
+omission, while requested text must contain at least one normalized token.
 
 The three flags remain separate:
 
