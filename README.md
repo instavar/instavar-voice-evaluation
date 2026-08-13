@@ -839,6 +839,10 @@ cannot pass. `not_flagged` means only that the configured deterministic checks
 did not fire. It does not prove content faithfulness, perceptual quality,
 pronunciation, accent fidelity, runtime honesty, or absence of leakage.
 
+The first post-hoc real-artifact characterization, exact report hashes, small
+contrast set, OOD controls, and limits are recorded in
+[`reports/content-faithfulness-validation-2026-08-13.md`](reports/content-faithfulness-validation-2026-08-13.md).
+
 ### Freeze multiple speaker references before evaluating candidates
 
 Extractor result schema 1.2 supports a content-addressed catalog of reference
