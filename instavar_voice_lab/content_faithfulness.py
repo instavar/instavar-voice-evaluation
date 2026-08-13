@@ -21,6 +21,7 @@ TOKEN_RE = re.compile(r"[\w']+", re.UNICODE)
 MAX_REFERENCE_COUNT = 128
 MAX_REFERENCE_IDS_PER_SAMPLE = 32
 MAX_TOTAL_REFERENCE_TOKENS = 50000
+MAX_TOTAL_INSTRUCTION_TOKENS = 50000
 MAX_TRANSCRIPT_BYTES = 64 * 1024
 MAX_DIAGNOSTIC_TEXT_BYTES = 64 * 1024
 MAX_DIAGNOSTIC_TOKENS_PER_TEXT = 4096
@@ -97,9 +98,12 @@ def _sample_diagnostics(
     requested: list[str],
     hypothesis: list[str],
     reference_texts: list[str],
+    instruction: list[str] | None,
     ngram_size: int,
+    instruction_ngram_size: int,
     repetition_excess_fraction_threshold: float,
     minimum_reference_ngram_hits: int,
+    minimum_instruction_ngram_hits: int,
     word_error_rate_threshold: float,
 ) -> dict[str, Any]:
     requested_ngrams = Counter(_ngrams(requested, ngram_size))
@@ -118,11 +122,26 @@ def _sample_diagnostics(
     reference_exclusive.difference_update(requested_ngrams)
     reference_hits = sorted(reference_exclusive & set(hypothesis_ngrams))
 
+    instruction_exclusive: set[tuple[str, ...]] = set()
+    instruction_hits: list[tuple[str, ...]] = []
+    instruction_overlap_status = "not_applicable"
+    if instruction is not None:
+        instruction_requested_ngrams = set(_ngrams(requested, instruction_ngram_size))
+        instruction_exclusive.update(_ngrams(instruction, instruction_ngram_size))
+        instruction_exclusive.difference_update(instruction_requested_ngrams)
+        if instruction_exclusive:
+            hypothesis_instruction_ngrams = set(_ngrams(hypothesis, instruction_ngram_size))
+            instruction_hits = sorted(instruction_exclusive & hypothesis_instruction_ngrams)
+            instruction_overlap_status = "evaluated"
+        else:
+            instruction_overlap_status = "no_exclusive_ngrams"
+
     wer = word_error_rate(" ".join(requested), " ".join(hypothesis))
     flags = {
         "high_word_error_rate": wer > word_error_rate_threshold,
         "repetition_excess": repetition_fraction > repetition_excess_fraction_threshold,
         "reference_transcript_overlap": len(reference_hits) >= minimum_reference_ngram_hits,
+        "spoken_instruction_overlap": len(instruction_hits) >= minimum_instruction_ngram_hits,
     }
     return {
         "content_gate_status": "failed" if any(flags.values()) else "not_flagged",
@@ -144,6 +163,17 @@ def _sample_diagnostics(
             _ngram_sha256(ngram) for ngram in reference_hits[:MAX_REPORTED_NGRAM_HITS]
         ],
         "reference_exclusive_ngram_hit_hashes_truncated": len(reference_hits) > MAX_REPORTED_NGRAM_HITS,
+        "instruction_overlap_status": instruction_overlap_status,
+        "instruction_ngram_size": instruction_ngram_size,
+        "instruction_exclusive_ngram_count": len(instruction_exclusive),
+        "instruction_exclusive_ngram_hit_count": len(instruction_hits),
+        "instruction_exclusive_ngram_hit_rate": (
+            len(instruction_hits) / len(instruction_exclusive) if instruction_exclusive else None
+        ),
+        "instruction_exclusive_ngram_hit_sha256": [
+            _ngram_sha256(ngram) for ngram in instruction_hits[:MAX_REPORTED_NGRAM_HITS]
+        ],
+        "instruction_exclusive_ngram_hit_hashes_truncated": len(instruction_hits) > MAX_REPORTED_NGRAM_HITS,
     }
 
 
@@ -155,18 +185,32 @@ def build_content_faithfulness_report(
     reference_assignment_plan: dict[str, Any],
     speaker_references: dict[str, tuple[Path, Path]],
     ngram_size: int = 4,
+    instruction_ngram_size: int = 2,
     repetition_excess_fraction_threshold: float = 0.05,
     minimum_reference_ngram_hits: int = 2,
+    minimum_instruction_ngram_hits: int = 1,
     word_error_rate_threshold: float = 0.1,
 ) -> dict[str, Any]:
     if isinstance(ngram_size, bool) or not isinstance(ngram_size, int) or not 2 <= ngram_size <= 12:
         raise ValueError("ngram_size must be an integer between 2 and 12")
+    if (
+        isinstance(instruction_ngram_size, bool)
+        or not isinstance(instruction_ngram_size, int)
+        or not 1 <= instruction_ngram_size <= 12
+    ):
+        raise ValueError("instruction_ngram_size must be an integer between 1 and 12")
     if (
         isinstance(minimum_reference_ngram_hits, bool)
         or not isinstance(minimum_reference_ngram_hits, int)
         or minimum_reference_ngram_hits < 1
     ):
         raise ValueError("minimum_reference_ngram_hits must be a positive integer")
+    if (
+        isinstance(minimum_instruction_ngram_hits, bool)
+        or not isinstance(minimum_instruction_ngram_hits, int)
+        or minimum_instruction_ngram_hits < 1
+    ):
+        raise ValueError("minimum_instruction_ngram_hits must be a positive integer")
     repetition_threshold = _validate_threshold(
         "repetition_excess_fraction_threshold",
         repetition_excess_fraction_threshold,
@@ -210,6 +254,7 @@ def build_content_faithfulness_report(
     planned_by_id = {sample["sample_id"]: sample for sample in generation_plan["samples"]}
     samples: list[dict[str, Any]] = []
     total_wer_cell_count = 0
+    total_instruction_token_count = 0
     for index, row in enumerate(observations):
         planned = planned_by_id[row["sample_id"]]
         mismatches = [
@@ -272,6 +317,18 @@ def build_content_faithfulness_report(
                 f"ASR hypothesis for {row['sample_id']}",
                 allow_empty=True,
             )
+            instruction_tokens = None
+            if "instruction" in planned:
+                instruction_tokens = _validated_diagnostic_tokens(
+                    planned["instruction"],
+                    f"generation-plan instruction for {row['sample_id']}",
+                    allow_empty=False,
+                )
+                total_instruction_token_count += len(instruction_tokens)
+                if total_instruction_token_count > MAX_TOTAL_INSTRUCTION_TOKENS:
+                    raise ValueError(
+                        f"generation-plan instructions exceed {MAX_TOTAL_INSTRUCTION_TOKENS} total normalized tokens"
+                    )
             total_wer_cell_count += len(requested_tokens) * max(1, len(hypothesis_tokens))
             if total_wer_cell_count > MAX_TOTAL_WER_CELL_COUNT:
                 raise ValueError(
@@ -282,9 +339,12 @@ def build_content_faithfulness_report(
                     requested=requested_tokens,
                     hypothesis=hypothesis_tokens,
                     reference_texts=[reference_texts[reference_id] for reference_id in reference_ids],
+                    instruction=instruction_tokens,
                     ngram_size=ngram_size,
+                    instruction_ngram_size=instruction_ngram_size,
                     repetition_excess_fraction_threshold=repetition_threshold,
                     minimum_reference_ngram_hits=minimum_reference_ngram_hits,
+                    minimum_instruction_ngram_hits=minimum_instruction_ngram_hits,
                     word_error_rate_threshold=wer_threshold,
                 )
             )
@@ -301,6 +361,7 @@ def build_content_faithfulness_report(
             "high_word_error_rate",
             "repetition_excess",
             "reference_transcript_overlap",
+            "spoken_instruction_overlap",
         )
         candidate_summaries.append(
             {
@@ -333,6 +394,12 @@ def build_content_faithfulness_report(
                 "reference_exclusive_ngram_hit_count": sum(
                     sample["reference_exclusive_ngram_hit_count"] for sample in evaluable
                 ),
+                "instruction_overlap_status_counts": dict(
+                    sorted(Counter(sample["instruction_overlap_status"] for sample in evaluable).items())
+                ),
+                "instruction_exclusive_ngram_hit_count": sum(
+                    sample["instruction_exclusive_ngram_hit_count"] for sample in evaluable
+                ),
             }
         )
     payload = {
@@ -343,7 +410,9 @@ def build_content_faithfulness_report(
         "reference_assignment_plan_sha256": assignment["sha256"],
         "parameters": {
             "ngram_size": ngram_size,
+            "instruction_ngram_size": instruction_ngram_size,
             "minimum_reference_ngram_hits": minimum_reference_ngram_hits,
+            "minimum_instruction_ngram_hits": minimum_instruction_ngram_hits,
             "repetition_excess_fraction_threshold": repetition_threshold,
             "word_error_rate_threshold": wer_threshold,
         },
@@ -351,8 +420,9 @@ def build_content_faithfulness_report(
         "samples": samples,
         "proves_content_faithfulness": False,
         "evidence_boundary": (
-            "This deterministic ASR-text diagnostic can flag requested-text error, repeated n-gram excess, and "
-            "reference-exclusive n-gram overlap. It does not prove perceptual quality, pronunciation, accent, "
+            "This deterministic ASR-text diagnostic can flag requested-text error, repeated n-gram excess, "
+            "reference-exclusive n-gram overlap, and instruction-exclusive n-gram overlap. It does not prove "
+            "perceptual quality, pronunciation, accent, "
             "causality, honest runtime execution, or absence of leakage when no flag fires."
         ),
     }

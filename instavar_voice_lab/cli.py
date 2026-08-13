@@ -424,7 +424,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     content_faithfulness = commands.add_parser(
         "build-content-faithfulness-report",
-        help="flag plan-bound ASR errors, repetition, and retained-reference transcript overlap",
+        help="flag plan-bound ASR errors, repetition, retained-reference overlap, and spoken instructions",
     )
     content_faithfulness.add_argument("observations", type=Path)
     content_faithfulness.add_argument("--generation-plan", type=Path, required=True)
@@ -438,6 +438,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     content_faithfulness.add_argument("--ngram-size", type=int, default=4)
     content_faithfulness.add_argument("--minimum-reference-ngram-hits", type=int, default=2)
+    content_faithfulness.add_argument("--instruction-ngram-size", type=int, default=2)
+    content_faithfulness.add_argument("--minimum-instruction-ngram-hits", type=int, default=1)
     content_faithfulness.add_argument("--repetition-excess-fraction-threshold", type=float, default=0.05)
     content_faithfulness.add_argument("--word-error-rate-threshold", type=float, default=0.1)
     content_faithfulness.add_argument("--output", type=Path, required=True)
@@ -1009,6 +1011,8 @@ def main(argv: list[str] | None = None) -> int:
                 speaker_references=_speaker_reference_declarations(args.speaker_reference),
                 ngram_size=args.ngram_size,
                 minimum_reference_ngram_hits=args.minimum_reference_ngram_hits,
+                instruction_ngram_size=args.instruction_ngram_size,
+                minimum_instruction_ngram_hits=args.minimum_instruction_ngram_hits,
                 repetition_excess_fraction_threshold=args.repetition_excess_fraction_threshold,
                 word_error_rate_threshold=args.word_error_rate_threshold,
             )

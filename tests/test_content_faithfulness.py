@@ -15,6 +15,18 @@ from instavar_voice_lab.speaker_reference_plans import build_speaker_reference_a
 
 
 class ContentFaithfulnessTests(unittest.TestCase):
+    @staticmethod
+    def assignment_for(plan: dict, catalog: dict) -> dict:
+        return build_speaker_reference_assignment_plan(
+            plan_id="speaker-plan",
+            generation_plan=plan,
+            reference_catalog=catalog,
+            assignments={(sample["prompt_id"], sample["seed"]): ["studio"] for sample in plan["samples"]},
+            policy_id="fixed",
+            stratification_dimensions=["channel"],
+            rationale="Use the same retained reference for every candidate.",
+        )
+
     def fixtures(self, root: Path, hypothesis: str) -> tuple[list[dict], dict, dict, dict, dict]:
         reference_audio = root / "reference.wav"
         reference_transcript = root / "reference.txt"
@@ -51,15 +63,7 @@ class ContentFaithfulnessTests(unittest.TestCase):
                 "record_failures_as_observations": True,
             },
         }
-        assignment = build_speaker_reference_assignment_plan(
-            plan_id="speaker-plan",
-            generation_plan=plan,
-            reference_catalog=catalog,
-            assignments={("p1", 42): ["studio"]},
-            policy_id="fixed",
-            stratification_dimensions=["channel"],
-            rationale="Use the same retained reference for every candidate.",
-        )
+        assignment = self.assignment_for(plan, catalog)
         audio_sha = hashlib.sha256(b"candidate-audio").hexdigest()
         observations = [
             {
@@ -190,6 +194,117 @@ class ContentFaithfulnessTests(unittest.TestCase):
             sample = result["samples"][0]
             self.assertTrue(sample["flags"]["reference_transcript_overlap"])
             self.assertFalse(sample["flags"]["repetition_excess"])
+
+    def test_flags_spoken_instruction_without_copying_diagnostic_text(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            observations, plan, catalog, assignment, references = self.fixtures(
+                root,
+                "Read with calm confidence. Today we discuss careful testing and why exact evidence matters.",
+            )
+            plan["samples"][0]["instruction"] = "Read with calm confidence."
+            assignment = self.assignment_for(plan, catalog)
+            result = build_content_faithfulness_report(
+                observations,
+                generation_plan=plan,
+                reference_catalog=catalog,
+                reference_assignment_plan=assignment,
+                speaker_references=references,
+                instruction_ngram_size=2,
+                minimum_instruction_ngram_hits=1,
+            )
+            sample = result["samples"][0]
+            self.assertEqual(sample["instruction_overlap_status"], "evaluated")
+            self.assertTrue(sample["flags"]["spoken_instruction_overlap"])
+            self.assertGreater(sample["instruction_exclusive_ngram_hit_count"], 0)
+            self.assertEqual(sample["content_gate_status"], "failed")
+            self.assertNotIn("calm", json.dumps(result))
+            self.assertEqual(result["candidates"][0]["flag_counts"]["spoken_instruction_overlap"], 1)
+
+    def test_requested_text_overlap_is_excluded_from_instruction_leakage(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            observations, plan, catalog, assignment, references = self.fixtures(
+                root,
+                "Today we discuss careful testing and why exact evidence matters for reliable systems.",
+            )
+            plan["samples"][0]["instruction"] = "Today we discuss careful testing."
+            assignment = self.assignment_for(plan, catalog)
+            result = build_content_faithfulness_report(
+                observations,
+                generation_plan=plan,
+                reference_catalog=catalog,
+                reference_assignment_plan=assignment,
+                speaker_references=references,
+                instruction_ngram_size=2,
+                minimum_instruction_ngram_hits=1,
+            )
+            sample = result["samples"][0]
+            self.assertEqual(sample["instruction_overlap_status"], "no_exclusive_ngrams")
+            self.assertEqual(sample["instruction_exclusive_ngram_count"], 0)
+            self.assertFalse(sample["flags"]["spoken_instruction_overlap"])
+            self.assertEqual(sample["content_gate_status"], "not_flagged")
+
+    def test_instruction_absence_is_not_applicable_and_single_token_can_be_preregistered(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = self.build(
+                root,
+                "Today we discuss careful testing and why exact evidence matters for reliable systems.",
+            )
+            sample = result["samples"][0]
+            self.assertEqual(sample["instruction_overlap_status"], "not_applicable")
+            self.assertFalse(sample["flags"]["spoken_instruction_overlap"])
+
+            observations, plan, catalog, assignment, references = self.fixtures(root, "WHISPER then continue")
+            plan["samples"][0]["instruction"] = "whisper"
+            assignment = self.assignment_for(plan, catalog)
+            result = build_content_faithfulness_report(
+                observations,
+                generation_plan=plan,
+                reference_catalog=catalog,
+                reference_assignment_plan=assignment,
+                speaker_references=references,
+                instruction_ngram_size=1,
+            )
+            self.assertTrue(result["samples"][0]["flags"]["spoken_instruction_overlap"])
+
+    def test_instruction_detection_uses_nfkc_and_has_fail_closed_limits(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            observations, plan, catalog, assignment, references = self.fixtures(root, "ＲＥＡＤ ＣＡＬＭＬＹ")
+            plan["samples"][0]["instruction"] = "read calmly"
+            assignment = self.assignment_for(plan, catalog)
+            result = build_content_faithfulness_report(
+                observations,
+                generation_plan=plan,
+                reference_catalog=catalog,
+                reference_assignment_plan=assignment,
+                speaker_references=references,
+                instruction_ngram_size=2,
+            )
+            self.assertTrue(result["samples"][0]["flags"]["spoken_instruction_overlap"])
+
+            with self.assertRaisesRegex(ValueError, "instruction_ngram_size"):
+                build_content_faithfulness_report(
+                    observations,
+                    generation_plan=plan,
+                    reference_catalog=catalog,
+                    reference_assignment_plan=assignment,
+                    speaker_references=references,
+                    instruction_ngram_size=0,
+                )
+            with (
+                patch("instavar_voice_lab.content_faithfulness.MAX_TOTAL_INSTRUCTION_TOKENS", 1),
+                self.assertRaisesRegex(ValueError, "instructions exceed"),
+            ):
+                build_content_faithfulness_report(
+                    observations,
+                    generation_plan=plan,
+                    reference_catalog=catalog,
+                    reference_assignment_plan=assignment,
+                    speaker_references=references,
+                )
 
     def test_rejects_tokenless_requested_text_and_bounded_asr_work(self) -> None:
         with TemporaryDirectory() as temporary:
