@@ -22,6 +22,7 @@ from .extraction import (
     observation_document_sha256,
 )
 from .faster_whisper import build_faster_whisper_results, faster_whisper_artifacts
+from .historical_prosody import audit_historical_prosody_batch
 from .lifecycle import (
     run_lifecycle,
     run_registered_lifecycle,
@@ -206,6 +207,15 @@ def build_parser() -> argparse.ArgumentParser:
     compare_prosody.add_argument("reference", type=Path)
     compare_prosody.add_argument("candidate", type=Path)
     compare_prosody.add_argument("--output", type=Path)
+
+    historical_prosody = commands.add_parser(
+        "audit-historical-prosody",
+        help="audit an unmatched historical WAV batch without inventing missing plan metadata",
+    )
+    historical_prosody.add_argument("manifest", type=Path)
+    historical_prosody.add_argument("--audio-base-dir", type=Path, required=True)
+    historical_prosody.add_argument("--extractor-revision", required=True)
+    historical_prosody.add_argument("--output", type=Path, required=True)
 
     blind = commands.add_parser("build-listening-pack", help="create blind review and reveal mapping documents")
     blind.add_argument(
@@ -695,6 +705,18 @@ def main(argv: list[str] | None = None) -> int:
             _write_json(args.output, result)
         else:
             print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    if args.command == "audit-historical-prosody":
+        try:
+            result = audit_historical_prosody_batch(
+                _read_json(args.manifest),
+                audio_base_dir=args.audio_base_dir,
+                extractor_revision=args.extractor_revision,
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
         return 0
     if args.command == "build-listening-pack":
         try:

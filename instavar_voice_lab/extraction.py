@@ -186,7 +186,7 @@ def _builtin_audio_probe_artifacts() -> dict[str, tuple[Path, str]]:
     return {"implementation": (Path(__file__).with_name("audio_probe.py"), "file")}
 
 
-def _builtin_prosody_proxy_artifacts() -> dict[str, tuple[Path, str]]:
+def builtin_prosody_proxy_artifacts() -> dict[str, tuple[Path, str]]:
     return {
         "implementation": (Path(__file__).with_name("prosody_probe.py"), "file"),
         "pcm_decoder": (Path(__file__).with_name("audio_probe.py"), "file"),
@@ -394,7 +394,7 @@ def build_prosody_probe_results(
         kind="prosody_proxy",
         name=BUILTIN_PROSODY_PROXY_NAME,
         revision=extractor_revision,
-        artifacts=_builtin_prosody_proxy_artifacts(),
+        artifacts=builtin_prosody_proxy_artifacts(),
     )
     results: list[dict[str, Any]] = []
     for index, row in enumerate(rows):
@@ -472,7 +472,7 @@ def apply_extractor_results(
         if kind == "audio_probe" and name.strip() == BUILTIN_AUDIO_PROBE_NAME:
             extractor_artifacts = _builtin_audio_probe_artifacts()
         elif kind == "prosody_proxy" and name.strip() == BUILTIN_PROSODY_PROXY_NAME:
-            extractor_artifacts = _builtin_prosody_proxy_artifacts()
+            extractor_artifacts = builtin_prosody_proxy_artifacts()
         else:
             raise ValueError("external extractor artifacts are required for live identity verification")
     expected_extractor = build_extractor_identity(

@@ -214,6 +214,49 @@ Quality run `31663581095` on 2026-08-13. The focused validation and OOD cases ar
 recorded in
 [`reports/prosody-comparison-validation-2026-08-13.md`](reports/prosody-comparison-validation-2026-08-13.md).
 
+Historical audio often predates strict observation fields. Do not invent a seed,
+runtime ID, or generation-plan binding to force that archive through schema 1.6.
+Instead, create an explicit unmatched-triage manifest:
+
+```json
+{
+  "schema_version": "instavar_voice_historical_prosody_manifest/v1",
+  "batch_id": "legacy-neutral-brief",
+  "purpose": "historical_unmatched_triage",
+  "samples": [
+    {
+      "sample_id": "legacy-base-neutral",
+      "candidate_id": "legacy-base",
+      "prompt_id": "neutral-brief",
+      "audio_path": "archive/legacy-base-neutral.wav",
+      "audio_sha256": "<lowercase-sha256>",
+      "requested_text": "A known historical passage.",
+      "seed": null,
+      "runtime_id": null
+    }
+  ]
+}
+```
+
+Run the content-bound audit with a common parent directory for every relative
+audio path:
+
+```bash
+instavar-voice-eval audit-historical-prosody historical-prosody-manifest.json \
+  --audio-base-dir /absolute/archive/root \
+  --extractor-revision <immutable-evaluator-revision> \
+  --output historical-prosody-report.json
+```
+
+The command rejects path escape, symlink traversal, unknown manifest fields,
+duplicate sample IDs, hash drift, mutable extractor revisions, and audio or
+extractor mutation during analysis. Missing historical metadata must be explicit
+null, not omitted or guessed. The report binds the manifest, live WAV bytes,
+proxy, PCM decoder, and historical batch runner. It preserves per-file failures
+and emits no ranking or aggregate quality score. Its output is ineligible for
+matched adaptation comparison because a historical archive is not a frozen
+generation plan.
+
 ## Bind artifacts across runtimes
 
 Before comparing runtimes, write a local binding plan that names the source
