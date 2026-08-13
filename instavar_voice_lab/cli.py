@@ -9,6 +9,7 @@ from pathlib import Path
 from .attempts import apply_generation_attempt_receipt, build_generation_attempt_receipt
 from .audio_probe import compare_wav_probes, probe_wav
 from .comparison import compare_matched_candidates, compare_matched_prosody, compare_runtime_candidates
+from .content_faithfulness import build_content_faithfulness_report
 from .contracts import VALIDATORS, validate_document
 from .corpus import audit_corpus
 from .extraction import (
@@ -420,6 +421,26 @@ def build_parser() -> argparse.ArgumentParser:
     faster_whisper_results.add_argument("--language", default="en")
     faster_whisper_results.add_argument("--beam-size", type=int, default=5)
     faster_whisper_results.add_argument("--output", type=Path, required=True)
+
+    content_faithfulness = commands.add_parser(
+        "build-content-faithfulness-report",
+        help="flag plan-bound ASR errors, repetition, and retained-reference transcript overlap",
+    )
+    content_faithfulness.add_argument("observations", type=Path)
+    content_faithfulness.add_argument("--generation-plan", type=Path, required=True)
+    content_faithfulness.add_argument("--reference-catalog", type=Path, required=True)
+    content_faithfulness.add_argument("--speaker-reference-plan", type=Path, required=True)
+    content_faithfulness.add_argument(
+        "--speaker-reference",
+        action="append",
+        required=True,
+        help="live REFERENCE_ID=AUDIO_PATH=TRANSCRIPT_PATH declaration",
+    )
+    content_faithfulness.add_argument("--ngram-size", type=int, default=4)
+    content_faithfulness.add_argument("--minimum-reference-ngram-hits", type=int, default=2)
+    content_faithfulness.add_argument("--repetition-excess-fraction-threshold", type=float, default=0.05)
+    content_faithfulness.add_argument("--word-error-rate-threshold", type=float, default=0.1)
+    content_faithfulness.add_argument("--output", type=Path, required=True)
 
     apply_results = commands.add_parser(
         "apply-extractor-results",
@@ -974,6 +995,24 @@ def main(argv: list[str] | None = None) -> int:
                 beam_size=args.beam_size,
             )
         except (OSError, json.JSONDecodeError, RuntimeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0
+    if args.command == "build-content-faithfulness-report":
+        try:
+            result = build_content_faithfulness_report(
+                _read_json(args.observations),
+                generation_plan=_read_json(args.generation_plan),
+                reference_catalog=_read_json(args.reference_catalog),
+                reference_assignment_plan=_read_json(args.speaker_reference_plan),
+                speaker_references=_speaker_reference_declarations(args.speaker_reference),
+                ngram_size=args.ngram_size,
+                minimum_reference_ngram_hits=args.minimum_reference_ngram_hits,
+                repetition_excess_fraction_threshold=args.repetition_excess_fraction_threshold,
+                word_error_rate_threshold=args.word_error_rate_threshold,
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
             print(error, file=sys.stderr)
             return 2
         _write_json(args.output, result)

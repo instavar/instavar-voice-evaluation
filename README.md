@@ -25,6 +25,7 @@ The shared layer provides:
 - frozen per-prompt and per-seed speaker-reference assignments bound to generation plans and reference catalogs;
 - an optional first-party SpeechBrain ECAPA execution path with CPU and CUDA routing, runtime provenance, and a content-addressed execution receipt;
 - an optional first-party faster-whisper execution path with offline model loading, frozen decoding, and content-addressed ASR receipts;
+- a plan-bound content-faithfulness report that keeps requested-text error, repeated n-gram excess, and retained-reference transcript overlap separate;
 - content-addressed generation-attempt receipts for runtime timing, duration, and memory evidence;
 - exact-versus-derived cross-runtime artifact manifests with live content rechecks;
 - lifecycle-stage and matched-comparison declarations for every supported adaptation path;
@@ -792,6 +793,51 @@ recording is plumbing evidence. It does not establish TTS intelligibility,
 Singapore English coverage, pronunciation quality, accent fidelity, cadence,
 or naturalness. The receipt remains unsigned and cannot defeat a malicious
 host or prove that the dependency behaved honestly.
+
+### Flag semantic corruption after ASR
+
+Audio can pass duration, clipping, silence, and file-validity checks while the
+spoken content repeats, omits requested words, or includes text from the
+conditioning transcript. Version 0.37 adds a deterministic diagnostic that
+binds three separate inputs: the exact requested text in the generation plan,
+the content-addressed ASR hypothesis in the observation, and the retained
+reference transcript selected by the frozen speaker-reference assignment.
+
+```bash
+instavar-voice-eval build-content-faithfulness-report \
+  observations-with-executed-asr.json \
+  --generation-plan generation-plan.json \
+  --reference-catalog speaker-reference-catalog.json \
+  --speaker-reference-plan speaker-reference-assignment-plan.json \
+  --speaker-reference studio=references/studio.wav=references/studio.txt \
+  --ngram-size 4 \
+  --minimum-reference-ngram-hits 2 \
+  --repetition-excess-fraction-threshold 0.05 \
+  --word-error-rate-threshold 0.1 \
+  --output content-faithfulness-report.json
+```
+
+Freeze the thresholds before using the report for a planned decision. A
+post-hoc run may characterize a discovered failure but is not preregistered
+confirmation. The report requires exact plan coverage, live reference bytes,
+the frozen assignment plan, and ASR evidence bound to the candidate WAV and
+extractor artifacts. It excludes reference n-grams that also occur in the
+requested text, so correctly speaking shared words is not mislabeled as
+reference leakage. Stable hashes identify hit n-grams without copying their raw
+text into the report. Those hashes are audit labels, not anonymization.
+
+The three flags remain separate:
+
+- high WER reports requested-text mismatch;
+- repeated n-gram excess reports repeated hypothesis windows beyond the count
+  expected from the requested text; and
+- reference transcript overlap reports reference-exclusive n-grams also found
+  in the ASR hypothesis.
+
+An invalid output fails the content gate. Missing ASR is `not_evaluable` and
+cannot pass. `not_flagged` means only that the configured deterministic checks
+did not fire. It does not prove content faithfulness, perceptual quality,
+pronunciation, accent fidelity, runtime honesty, or absence of leakage.
 
 ### Freeze multiple speaker references before evaluating candidates
 
