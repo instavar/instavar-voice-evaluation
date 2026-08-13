@@ -179,6 +179,36 @@ field or evidence overwrite, and retains insufficient-activity rows as explicit
 extractor failures. Content binding makes the measurements attributable; it
 does not upgrade proxy measurements into perceptual evidence.
 
+Compare an augmented baseline and adapted batch only after both candidates use
+the same frozen generation plan:
+
+```bash
+instavar-voice-eval compare-matched-prosody \
+  evaluation/observations-with-prosody.json \
+  --plan evaluation/generation-plan.json \
+  --baseline base-model \
+  --adapted selected-adapter \
+  --output evaluation/matched-prosody-comparison.json \
+  --seed 20260812
+```
+
+The command requires exact prompt and seed coverage, identical planned text,
+matching extractor revisions and artifact hashes, complete proxy fields on both
+sides of every compared pair, and an input-audio hash match for every complete
+row. Invalid generated outputs and prosody-extractor failures are counted
+separately. The command fails instead of emitting an empty success when no pair
+has complete evidence on both sides. Nullable variation fields remain null when
+there is too little signal structure to calculate them; null is never converted
+to zero.
+
+Every numeric result is an adapted-minus-baseline signal delta with
+`direction: not_established`. The report deliberately contains no composite
+score, winner, or directional-improvement field. A larger pause, energy,
+phrase-duration, or zero-crossing variation is not universally better. The
+comparison can prioritize matched samples for blind review, but it cannot prove
+better cadence, less monotony, accent fidelity, naturalness, preference, or an
+adaptation benefit.
+
 ## Bind artifacts across runtimes
 
 Before comparing runtimes, write a local binding plan that names the source

@@ -15,6 +15,8 @@ from .metrics import (
     bootstrap_mean_interval,
     score_objective_observations,
 )
+from .observations import validate_objective_observations
+from .prosody_probe import PROSODY_OBSERVATION_FIELDS
 from .runtime_artifacts import exact_runtime_binding, verify_runtime_artifact_manifest
 from .speaker_reference_plans import (
     speaker_reference_assignment_sha256,
@@ -68,6 +70,16 @@ CONTENT_BOUND_EVIDENCE = {
     "peak_memory_bytes": "runtime",
     "audio_duration_seconds": "runtime",
 }
+
+PROSODY_BOOLEAN_FIELDS = {"prosody_eligible_for_long_form"}
+PROSODY_NULLABLE_FIELDS = {
+    "prosody_active_rms_db_std",
+    "prosody_pause_duration_cv",
+    "prosody_phrase_duration_cv",
+    "prosody_window_rms_db_std",
+    "prosody_zero_crossing_rate_hz_std",
+}
+PROSODY_NUMERIC_FIELDS = PROSODY_OBSERVATION_FIELDS - PROSODY_BOOLEAN_FIELDS
 
 
 def _pair_key(row: dict[str, Any], index: int) -> tuple[str, int]:
@@ -583,6 +595,298 @@ def compare_matched_candidates(
         baseline_candidate_id: {},
         adapted_candidate_id: {},
     }
+    return _compare_matched_candidates_remainder(
+        selected=selected,
+        grouped=grouped,
+        baseline_candidate_id=baseline_candidate_id,
+        adapted_candidate_id=adapted_candidate_id,
+        plan_binding=plan_binding,
+        speaker_reference_plan_binding=speaker_reference_plan_binding,
+        plan=plan,
+        seed=seed,
+    )
+
+
+def compare_matched_prosody(
+    rows: list[dict[str, Any]],
+    *,
+    plan: dict[str, Any],
+    baseline_candidate_id: str,
+    adapted_candidate_id: str,
+    seed: int = 20260812,
+) -> dict[str, Any]:
+    """Compare content-bound prosody proxies without assigning a quality direction."""
+    if not baseline_candidate_id or not adapted_candidate_id:
+        raise ValueError("baseline and adapted candidate ids must be non-empty")
+    if baseline_candidate_id == adapted_candidate_id:
+        raise ValueError("baseline and adapted candidate ids must differ")
+    selected = [row for row in rows if row.get("candidate_id") in {baseline_candidate_id, adapted_candidate_id}]
+    errors = validate_objective_observations(
+        selected,
+        require_version=True,
+        require_seed=True,
+        require_runtime=True,
+    )
+    if errors:
+        raise ValueError("; ".join(errors))
+    plan_binding = _validate_plan_binding(
+        plan,
+        selected,
+        {baseline_candidate_id, adapted_candidate_id},
+    )
+
+    grouped: dict[str, dict[tuple[str, int], tuple[int, dict[str, Any]]]] = {
+        baseline_candidate_id: {},
+        adapted_candidate_id: {},
+    }
+    return _compare_matched_prosody_remainder(
+        selected=selected,
+        grouped=grouped,
+        baseline_candidate_id=baseline_candidate_id,
+        adapted_candidate_id=adapted_candidate_id,
+        plan_binding=plan_binding,
+        plan=plan,
+        seed=seed,
+    )
+
+
+def _compare_matched_prosody_remainder(
+    *,
+    selected: list[dict[str, Any]],
+    grouped: dict[str, dict[tuple[str, int], tuple[int, dict[str, Any]]]],
+    baseline_candidate_id: str,
+    adapted_candidate_id: str,
+    plan_binding: dict[str, Any],
+    plan: dict[str, Any],
+    seed: int,
+) -> dict[str, Any]:
+    for index, row in enumerate(selected):
+        candidate_id = str(row["candidate_id"])
+        key = _pair_key(row, index)
+        if key in grouped[candidate_id]:
+            raise ValueError(f"duplicate matched observation for {candidate_id}, prompt {key[0]}, seed {key[1]}")
+        grouped[candidate_id][key] = (index, row)
+
+    baseline_keys = set(grouped[baseline_candidate_id])
+    adapted_keys = set(grouped[adapted_candidate_id])
+    if baseline_keys != adapted_keys:
+        raise ValueError(
+            "matched prosody comparison requires identical prompt and seed coverage; "
+            f"missing adapted={sorted(baseline_keys - adapted_keys)}; "
+            f"missing baseline={sorted(adapted_keys - baseline_keys)}"
+        )
+    if not baseline_keys:
+        raise ValueError("matched prosody comparison requires at least one prompt and seed pair")
+    planned_by_id = {
+        row["sample_id"]: row
+        for row in plan["samples"]
+        if isinstance(row, dict) and row.get("sample_id") in {item["sample_id"] for item in selected}
+    }
+
+    def prosody_status(index: int, row: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+        evidence = row.get("evidence")
+        record = evidence.get("prosody_proxy") if isinstance(evidence, dict) else None
+        failures = row.get("extractor_failures")
+        if failures is not None and not isinstance(failures, dict):
+            raise ValueError(f"observation {index} extractor_failures must be an object")
+        failure = failures.get("prosody_proxy") if isinstance(failures, dict) else None
+        present_fields = PROSODY_OBSERVATION_FIELDS & set(row)
+        if row["valid"] is not True:
+            if record is not None or failure is not None or present_fields:
+                raise ValueError(f"observation {index} invalid output must not contain prosody results")
+            return "invalid_output", None
+        if failure is not None:
+            if record is not None or present_fields:
+                raise ValueError(
+                    f"observation {index} cannot contain both a prosody failure and complete prosody evidence"
+                )
+            if not isinstance(failure, dict):
+                raise ValueError(f"observation {index} extractor_failures.prosody_proxy must be an object")
+            if any(not isinstance(failure.get(field), str) or not failure[field].strip() for field in ("error_type", "error")):
+                raise ValueError(
+                    f"observation {index} extractor_failures.prosody_proxy must record error_type and error"
+                )
+            failure_audio_sha = row.get("audio_sha256")
+            if not isinstance(failure_audio_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", failure_audio_sha):
+                raise ValueError(f"observation {index} prosody failure requires audio_sha256")
+            if failure.get("input_audio_sha256") != failure_audio_sha:
+                raise ValueError(
+                    f"observation {index} prosody failure input_audio_sha256 must match audio_sha256"
+                )
+            failure_artifact_sha = failure.get("extractor_artifact_set_sha256")
+            if not isinstance(failure_artifact_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", failure_artifact_sha):
+                raise ValueError(
+                    f"observation {index} prosody failure must bind extractor_artifact_set_sha256"
+                )
+            if any(
+                not isinstance(failure.get(field), str) or not failure[field].strip()
+                for field in ("extractor", "revision")
+            ):
+                raise ValueError(f"observation {index} prosody failure must bind extractor and revision")
+            return "extractor_failed", {
+                "extractor": failure["extractor"].strip(),
+                "revision": failure["revision"].strip(),
+                "extractor_artifact_set_sha256": failure_artifact_sha,
+                "error_type": failure["error_type"].strip(),
+                "error": failure["error"].strip(),
+            }
+        if not isinstance(record, dict):
+            raise ValueError(f"observation {index} valid output is missing evidence.prosody_proxy")
+        missing = sorted(PROSODY_OBSERVATION_FIELDS - set(row))
+        if missing:
+            raise ValueError(f"observation {index} is missing prosody proxy fields: {missing}")
+        unexpected_nulls = sorted(
+            field for field in PROSODY_NUMERIC_FIELDS - PROSODY_NULLABLE_FIELDS if row[field] is None
+        )
+        if unexpected_nulls:
+            raise ValueError(f"observation {index} has unexpected null prosody fields: {unexpected_nulls}")
+        audio_sha = row.get("audio_sha256")
+        if not isinstance(audio_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", audio_sha):
+            raise ValueError(f"observation {index} prosody evidence requires audio_sha256")
+        if record.get("input_audio_sha256") != audio_sha:
+            raise ValueError(
+                f"observation {index} evidence.prosody_proxy.input_audio_sha256 must match audio_sha256"
+            )
+        signature = _evidence_signature(row, "prosody_proxy", index)
+        if signature is None or not signature[2]:
+            raise ValueError(f"observation {index} prosody evidence must bind extractor_artifact_set_sha256")
+        return "complete", {
+            "extractor": signature[0],
+            "revision": signature[1],
+            "extractor_artifact_set_sha256": signature[2],
+        }
+
+    signatures: set[tuple[str, str, str]] = set()
+    deltas: dict[str, list[float]] = defaultdict(list)
+    pair_rows: list[dict[str, Any]] = []
+    status_counts = {
+        "baseline_invalid_output": 0,
+        "adapted_invalid_output": 0,
+        "baseline_extractor_failed": 0,
+        "adapted_extractor_failed": 0,
+        "complete_matched_pairs": 0,
+    }
+    for key in sorted(baseline_keys):
+        baseline_index, baseline = grouped[baseline_candidate_id][key]
+        adapted_index, adapted = grouped[adapted_candidate_id][key]
+        if baseline["requested_text"].strip() != adapted["requested_text"].strip():
+            raise ValueError(f"requested_text mismatch for prompt {key[0]}, seed {key[1]}")
+        baseline_category = planned_by_id[baseline["sample_id"]].get("category")
+        adapted_category = planned_by_id[adapted["sample_id"]].get("category")
+        if baseline_category != adapted_category:
+            raise ValueError(f"matched prosody pair must use one category for prompt {key[0]}, seed {key[1]}")
+        if baseline_category is not None and (
+            not isinstance(baseline_category, str) or not baseline_category.strip()
+        ):
+            raise ValueError(f"generation plan category must be non-empty for prompt {key[0]}, seed {key[1]}")
+        baseline_status, baseline_provenance = prosody_status(baseline_index, baseline)
+        adapted_status, adapted_provenance = prosody_status(adapted_index, adapted)
+        if baseline_status == "invalid_output":
+            status_counts["baseline_invalid_output"] += 1
+        if adapted_status == "invalid_output":
+            status_counts["adapted_invalid_output"] += 1
+        if baseline_status == "extractor_failed":
+            status_counts["baseline_extractor_failed"] += 1
+        if adapted_status == "extractor_failed":
+            status_counts["adapted_extractor_failed"] += 1
+        pair_result: dict[str, Any] = {
+            "prompt_id": key[0],
+            "seed": key[1],
+            "baseline_sample_id": baseline["sample_id"],
+            "adapted_sample_id": adapted["sample_id"],
+            "baseline_status": baseline_status,
+            "adapted_status": adapted_status,
+            "eligible_for_proxy_comparison": baseline_status == adapted_status == "complete",
+        }
+        if isinstance(baseline_category, str):
+            pair_result["category"] = baseline_category.strip()
+        if baseline_status == "extractor_failed":
+            pair_result["baseline_extractor_failure"] = baseline_provenance
+        if adapted_status == "extractor_failed":
+            pair_result["adapted_extractor_failure"] = adapted_provenance
+        if pair_result["eligible_for_proxy_comparison"]:
+            assert baseline_provenance is not None and adapted_provenance is not None
+            signatures.add(tuple(baseline_provenance.values()))
+            signatures.add(tuple(adapted_provenance.values()))
+            status_counts["complete_matched_pairs"] += 1
+            values: dict[str, dict[str, Any]] = {}
+            for field in sorted(PROSODY_OBSERVATION_FIELDS):
+                baseline_value = baseline[field]
+                adapted_value = adapted[field]
+                delta = None
+                if field in PROSODY_NUMERIC_FIELDS and baseline_value is not None and adapted_value is not None:
+                    delta = float(adapted_value) - float(baseline_value)
+                    deltas[field].append(delta)
+                values[field] = {
+                    "baseline": baseline_value,
+                    "adapted": adapted_value,
+                    "adapted_minus_baseline": delta,
+                }
+            pair_result["proxies"] = values
+        pair_rows.append(pair_result)
+
+    if status_counts["complete_matched_pairs"] == 0:
+        raise ValueError("matched prosody comparison has no pair with complete proxy evidence on both candidates")
+    if len(signatures) != 1:
+        rendered = ", ".join(f"{name}@{revision}#{artifact}" for name, revision, artifact in sorted(signatures))
+        raise ValueError(f"matched prosody comparison cannot mix extractor provenance: {rendered}")
+    extractor, revision, artifact_sha = next(iter(signatures))
+
+    metric_rows: list[dict[str, Any]] = []
+    for index, field in enumerate(sorted(PROSODY_NUMERIC_FIELDS)):
+        values = deltas.get(field, [])
+        metric_rows.append(
+            {
+                "proxy": field,
+                "direction": "not_established",
+                "complete_delta_pair_count": len(values),
+                "null_delta_pair_count": status_counts["complete_matched_pairs"] - len(values),
+                "mean_adapted_minus_baseline": mean(values) if values else None,
+                "median_adapted_minus_baseline": median(values) if values else None,
+                "mean_delta_95pct_bootstrap_ci": (
+                    bootstrap_mean_interval(values, seed=seed + index) if values else None
+                ),
+            }
+        )
+
+    return {
+        "schema_version": "1.0.0",
+        "status": "passed",
+        "baseline_candidate_id": baseline_candidate_id,
+        "adapted_candidate_id": adapted_candidate_id,
+        "pairing_keys": ["prompt_id", "seed"],
+        "planned_pair_count": len(baseline_keys),
+        "generation_plan": plan_binding,
+        "extractor_provenance": {
+            "extractor": extractor,
+            "revision": revision,
+            "extractor_artifact_set_sha256": artifact_sha,
+        },
+        "coverage": status_counts,
+        "metrics": metric_rows,
+        "pairs": pair_rows,
+        "quality_direction_established": False,
+        "winner": None,
+        "proves_adaptation_benefit": False,
+        "evidence_boundary": (
+            "This comparison proves exact plan, prompt, seed, audio-hash, field-coverage, and recorded extractor "
+            "provenance checks for the compared proxy rows. Signed deltas describe signal variation only. They do "
+            "not establish better cadence, less monotony, accent fidelity, naturalness, preference, or causation."
+        ),
+    }
+
+
+def _compare_matched_candidates_remainder(
+    *,
+    selected: list[dict[str, Any]],
+    grouped: dict[str, dict[tuple[str, int], dict[str, Any]]],
+    baseline_candidate_id: str,
+    adapted_candidate_id: str,
+    plan_binding: dict[str, Any],
+    speaker_reference_plan_binding: dict[str, Any] | None,
+    plan: dict[str, Any],
+    seed: int,
+) -> dict[str, Any]:
     for index, row in enumerate(selected):
         if not isinstance(row, dict):
             raise ValueError(f"observation {index} must be an object")

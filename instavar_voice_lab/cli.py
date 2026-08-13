@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .attempts import apply_generation_attempt_receipt, build_generation_attempt_receipt
 from .audio_probe import compare_wav_probes, probe_wav
-from .comparison import compare_matched_candidates, compare_runtime_candidates
+from .comparison import compare_matched_candidates, compare_matched_prosody, compare_runtime_candidates
 from .contracts import VALIDATORS, validate_document
 from .corpus import audit_corpus
 from .extraction import (
@@ -486,6 +486,17 @@ def build_parser() -> argparse.ArgumentParser:
     matched.add_argument("--adapted", required=True)
     matched.add_argument("--output", type=Path, required=True)
     matched.add_argument("--seed", type=int, default=20260812)
+
+    matched_prosody = commands.add_parser(
+        "compare-matched-prosody",
+        help="compare plan-matched content-bound prosody proxies without a quality direction",
+    )
+    matched_prosody.add_argument("observations", type=Path)
+    matched_prosody.add_argument("--plan", type=Path, required=True)
+    matched_prosody.add_argument("--baseline", required=True)
+    matched_prosody.add_argument("--adapted", required=True)
+    matched_prosody.add_argument("--output", type=Path, required=True)
+    matched_prosody.add_argument("--seed", type=int, default=20260812)
 
     runtime_comparison = commands.add_parser(
         "compare-runtimes",
@@ -1013,6 +1024,23 @@ def main(argv: list[str] | None = None) -> int:
                 speaker_reference_plan=(
                     _read_json(args.speaker_reference_plan) if args.speaker_reference_plan else None
                 ),
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0
+    if args.command == "compare-matched-prosody":
+        try:
+            rows = _read_json(args.observations)
+            if not isinstance(rows, list):
+                raise ValueError("objective observations must be a JSON array")
+            result = compare_matched_prosody(
+                rows,
+                plan=_read_json(args.plan),
+                baseline_candidate_id=args.baseline,
+                adapted_candidate_id=args.adapted,
+                seed=args.seed,
             )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             print(error, file=sys.stderr)
