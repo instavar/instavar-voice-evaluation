@@ -65,7 +65,6 @@ class HistoricalProsodyTests(unittest.TestCase):
             report = audit_historical_prosody_batch(
                 self._manifest(audio),
                 audio_base_dir=root,
-                extractor_revision="historical-prosody-1",
             )
             self.assertEqual(report["schema_version"], HISTORICAL_PROSODY_REPORT_SCHEMA_VERSION)
             self.assertEqual(report["coverage"]["sample_count"], 1)
@@ -73,6 +72,11 @@ class HistoricalProsodyTests(unittest.TestCase):
             self.assertEqual(report["coverage"]["runtime_not_recorded_count"], 1)
             self.assertEqual(report["coverage"]["long_form_eligible_count"], 0)
             self.assertEqual(len(report["extractor"]["artifacts"]), 3)
+            self.assertEqual(report["extractor"]["revision_basis"], "artifact_set_sha256")
+            self.assertEqual(
+                report["extractor"]["revision"],
+                f"artifact-set-sha256:{report['extractor']['artifact_set_sha256']}",
+            )
             self.assertIsNone(report["results"][0]["seed"])
             self.assertFalse(report["eligible_for_matched_adaptation_comparison"])
             self.assertIsNone(report["winner"])
@@ -86,7 +90,6 @@ class HistoricalProsodyTests(unittest.TestCase):
             report = audit_historical_prosody_batch(
                 self._manifest(audio),
                 audio_base_dir=root,
-                extractor_revision="historical-prosody-1",
             )
             self.assertEqual(report["status"], "analysis_complete_with_failures")
             self.assertEqual(report["coverage"]["failed_count"], 1)
@@ -105,7 +108,6 @@ class HistoricalProsodyTests(unittest.TestCase):
                 audit_historical_prosody_batch(
                     drifted,
                     audio_base_dir=root,
-                    extractor_revision="historical-prosody-1",
                 )
             escaped = deepcopy(manifest)
             escaped["samples"][0]["audio_path"] = "../sample.wav"
@@ -113,7 +115,6 @@ class HistoricalProsodyTests(unittest.TestCase):
                 audit_historical_prosody_batch(
                     escaped,
                     audio_base_dir=root,
-                    extractor_revision="historical-prosody-1",
                 )
             link = root / "linked.wav"
             link.symlink_to(audio)
@@ -123,7 +124,6 @@ class HistoricalProsodyTests(unittest.TestCase):
                 audit_historical_prosody_batch(
                     linked,
                     audio_base_dir=root,
-                    extractor_revision="historical-prosody-1",
                 )
             duplicated = deepcopy(manifest)
             duplicated["samples"].append(deepcopy(duplicated["samples"][0]))
@@ -131,7 +131,6 @@ class HistoricalProsodyTests(unittest.TestCase):
                 audit_historical_prosody_batch(
                     duplicated,
                     audio_base_dir=root,
-                    extractor_revision="historical-prosody-1",
                 )
 
     def test_rejects_implicit_unknowns_and_mutation_during_analysis(self) -> None:
@@ -146,7 +145,6 @@ class HistoricalProsodyTests(unittest.TestCase):
                 audit_historical_prosody_batch(
                     implicit,
                     audio_base_dir=root,
-                    extractor_revision="historical-prosody-1",
                 )
             expected = manifest["samples"][0]["audio_sha256"]
             with patch(
@@ -157,7 +155,6 @@ class HistoricalProsodyTests(unittest.TestCase):
                     audit_historical_prosody_batch(
                         manifest,
                         audio_base_dir=root,
-                        extractor_revision="historical-prosody-1",
                     )
 
     def test_rejects_extractor_source_drift(self) -> None:
@@ -166,24 +163,17 @@ class HistoricalProsodyTests(unittest.TestCase):
             audio = root / "sample.wav"
             self._write_tone(audio)
             manifest = self._manifest(audio)
-            original = historical_prosody_module.build_extractor_identity
-            first = original(
-                kind="prosody_proxy",
-                name="instavar_voice_lab.prosody_probe",
-                revision="historical-prosody-1",
-                artifacts=historical_prosody_module._historical_prosody_artifacts(),
-            )
+            first = historical_prosody_module._content_addressed_extractor()
             second = deepcopy(first)
             second["artifact_set_sha256"] = "f" * 64
             with patch(
-                "instavar_voice_lab.historical_prosody.build_extractor_identity",
+                "instavar_voice_lab.historical_prosody._content_addressed_extractor",
                 side_effect=[first, second],
             ):
                 with self.assertRaisesRegex(ValueError, "extractor artifacts changed"):
                     audit_historical_prosody_batch(
                         manifest,
                         audio_base_dir=root,
-                        extractor_revision="historical-prosody-1",
                     )
 
     def test_cli_writes_report(self) -> None:
@@ -201,8 +191,6 @@ class HistoricalProsodyTests(unittest.TestCase):
                         str(manifest_path),
                         "--audio-base-dir",
                         str(root),
-                        "--extractor-revision",
-                        "historical-prosody-1",
                         "--output",
                         str(report_path),
                     ]

@@ -52,6 +52,20 @@ def _historical_prosody_artifacts() -> dict[str, tuple[Path, str]]:
     }
 
 
+def _content_addressed_extractor() -> dict[str, Any]:
+    identity = build_extractor_identity(
+        kind="prosody_proxy",
+        name=BUILTIN_PROSODY_PROXY_NAME,
+        revision="content-addressed",
+        artifacts=_historical_prosody_artifacts(),
+    )
+    return {
+        **identity,
+        "revision": f"artifact-set-sha256:{identity['artifact_set_sha256']}",
+        "revision_basis": "artifact_set_sha256",
+    }
+
+
 def _validate_manifest(manifest: Any) -> list[dict[str, Any]]:
     expected_fields = {"schema_version", "batch_id", "purpose", "samples"}
     if not isinstance(manifest, dict) or set(manifest) != expected_fields:
@@ -128,15 +142,9 @@ def audit_historical_prosody_batch(
     manifest: Any,
     *,
     audio_base_dir: Path,
-    extractor_revision: str,
 ) -> dict[str, Any]:
     samples = _validate_manifest(manifest)
-    extractor = build_extractor_identity(
-        kind="prosody_proxy",
-        name=BUILTIN_PROSODY_PROXY_NAME,
-        revision=extractor_revision,
-        artifacts=_historical_prosody_artifacts(),
-    )
+    extractor = _content_addressed_extractor()
     results: list[dict[str, Any]] = []
     resolved_audio: list[tuple[Path, str]] = []
     for index, row in enumerate(samples):
@@ -170,12 +178,7 @@ def audit_historical_prosody_batch(
             raise ValueError(f"historical prosody sample {index} audio changed during analysis")
         results.append(result)
 
-    final_extractor = build_extractor_identity(
-        kind="prosody_proxy",
-        name=BUILTIN_PROSODY_PROXY_NAME,
-        revision=extractor_revision,
-        artifacts=_historical_prosody_artifacts(),
-    )
+    final_extractor = _content_addressed_extractor()
     if final_extractor != extractor:
         raise ValueError("prosody extractor artifacts changed during historical batch analysis")
     for index, (path, expected_sha) in enumerate(resolved_audio):

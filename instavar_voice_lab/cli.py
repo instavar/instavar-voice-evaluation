@@ -214,7 +214,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     historical_prosody.add_argument("manifest", type=Path)
     historical_prosody.add_argument("--audio-base-dir", type=Path, required=True)
-    historical_prosody.add_argument("--extractor-revision", required=True)
     historical_prosody.add_argument("--output", type=Path, required=True)
 
     blind = commands.add_parser("build-listening-pack", help="create blind review and reveal mapping documents")
@@ -711,7 +710,6 @@ def main(argv: list[str] | None = None) -> int:
             result = audit_historical_prosody_batch(
                 _read_json(args.manifest),
                 audio_base_dir=args.audio_base_dir,
-                extractor_revision=args.extractor_revision,
             )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             print(error, file=sys.stderr)

@@ -244,18 +244,18 @@ audio path:
 ```bash
 instavar-voice-eval audit-historical-prosody historical-prosody-manifest.json \
   --audio-base-dir /absolute/archive/root \
-  --extractor-revision <immutable-evaluator-revision> \
   --output historical-prosody-report.json
 ```
 
 The command rejects path escape, symlink traversal, unknown manifest fields,
-duplicate sample IDs, hash drift, mutable extractor revisions, and audio or
-extractor mutation during analysis. Missing historical metadata must be explicit
-null, not omitted or guessed. The report binds the manifest, live WAV bytes,
-proxy, PCM decoder, and historical batch runner. It preserves per-file failures
-and emits no ranking or aggregate quality score. Its output is ineligible for
-matched adaptation comparison because a historical archive is not a frozen
-generation plan.
+duplicate sample IDs, hash drift, and audio or extractor mutation during
+analysis. Missing historical metadata must be explicit null, not omitted or
+guessed. The extractor revision is derived from the exact artifact-set digest,
+so it cannot disagree with the proxy, PCM decoder, or historical batch runner.
+The report also binds the manifest and live WAV bytes. It preserves per-file
+failures and emits no ranking or aggregate quality score. Its output is
+ineligible for matched adaptation comparison because a historical archive is
+not a frozen generation plan.
 
 ## Bind artifacts across runtimes
 
