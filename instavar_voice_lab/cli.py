@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import wave
 from pathlib import Path
 
 from .attempts import apply_generation_attempt_receipt, build_generation_attempt_receipt
@@ -37,6 +38,7 @@ from .listening import (
 )
 from .metrics import score_objective_observations
 from .observations import validate_objective_observations
+from .prosody_probe import compare_prosody_proxies, probe_prosody_proxy
 from .runtime_artifacts import (
     build_runtime_artifact_manifest,
     validate_runtime_artifact_manifest,
@@ -188,6 +190,21 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("reference", type=Path)
     compare.add_argument("candidate", type=Path)
     compare.add_argument("--output", type=Path)
+
+    prosody = commands.add_parser(
+        "probe-prosody",
+        help="measure deterministic energy, pause, phrase, and zero-crossing proxies",
+    )
+    prosody.add_argument("wav", type=Path)
+    prosody.add_argument("--output", type=Path)
+
+    compare_prosody = commands.add_parser(
+        "compare-prosody",
+        help="compare matched waveform prosody proxies without perceptual claims",
+    )
+    compare_prosody.add_argument("reference", type=Path)
+    compare_prosody.add_argument("candidate", type=Path)
+    compare_prosody.add_argument("--output", type=Path)
 
     blind = commands.add_parser("build-listening-pack", help="create blind review and reveal mapping documents")
     blind.add_argument(
@@ -629,6 +646,28 @@ def main(argv: list[str] | None = None) -> int:
         try:
             result = compare_wav_probes(args.reference, args.candidate)
         except (OSError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        if args.output:
+            _write_json(args.output, result)
+        else:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    if args.command == "probe-prosody":
+        try:
+            result = probe_prosody_proxy(args.wav)
+        except (OSError, ValueError, EOFError, wave.Error) as error:
+            print(error, file=sys.stderr)
+            return 2
+        if args.output:
+            _write_json(args.output, result)
+        else:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result["status"] == "complete" else 1
+    if args.command == "compare-prosody":
+        try:
+            result = compare_prosody_proxies(args.reference, args.candidate)
+        except (OSError, ValueError, EOFError, wave.Error) as error:
             print(error, file=sys.stderr)
             return 2
         if args.output:

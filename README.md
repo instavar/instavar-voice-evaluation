@@ -10,6 +10,7 @@ The shared layer provides:
 - semantic validation using only the Python standard library;
 - a frozen Singapore English prompt and listening-criteria pack;
 - deterministic PCM WAV diagnostics;
+- deterministic waveform prosody proxies with explicit perceptual boundaries;
 - deterministic blind-review labels, identity-neutral staged filenames, and a separately stored reveal mapping;
 - objective proxy scoring from versioned ASR, speaker-encoder, and runtime observations;
 - a versioned objective-observation contract with stable identifiers and complete runtime-artifact bindings;
@@ -130,6 +131,25 @@ instavar-voice-eval compare-audio pytorch.wav alternative-runtime.wav \
 ```
 
 The comparison records format matches and candidate-minus-reference deltas. It deliberately emits `proves_runtime_equivalence: false`: matching container and signal-level diagnostics cannot establish text, speaker, accent, cadence, or perceptual equivalence.
+
+For matched-text cadence triage, measure waveform energy, pause, phrase-duration,
+and zero-crossing variation:
+
+```bash
+instavar-voice-eval probe-prosody candidate.wav \
+  --output evaluation/candidate.prosody-proxy.json
+
+instavar-voice-eval compare-prosody baseline.wav candidate.wav \
+  --output evaluation/matched.prosody-proxy.json
+```
+
+The proxy emits no composite score or good/bad threshold. It does not estimate
+accent, phonemes, pitch, stress, naturalness, listening fatigue, or a monotony
+verdict. Use it to surface matched outputs whose energy contours, pause timing,
+phrase timing, or zero-crossing variation differ enough to prioritize blinded
+listening. `eligible_for_long_form` means only that the WAV meets the default
+30-second analysis duration; it is not a quality gate. Mono uncompressed PCM is
+required so channel mixing cannot silently change the result.
 
 ## Bind artifacts across runtimes
 
