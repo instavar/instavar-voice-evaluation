@@ -139,7 +139,18 @@ Historical runs often predate the strict experiment and package contracts. Impor
 instavar-voice-eval probe-audio output.wav --output evaluation/output.probe.json
 ```
 
-The deterministic probe reports duration, sample rate, channels, sample width, peak, RMS, DC offset, silence fraction, and clipping fraction for uncompressed PCM WAV files. It does not measure intelligibility, speaker identity, accent fidelity, cadence, or naturalness.
+The deterministic probe reports duration, sample rate, channels, sample width,
+peak, RMS, DC offset, silence fraction, and clipping fraction for uncompressed
+PCM WAV files. Version 0.40 processes PCM in bounded chunks, rejects truncated
+payloads, validates finite thresholds, and fails before decoding when the
+declared PCM payload exceeds 512 MiB. Callers using the Python API can set a
+smaller positive `max_pcm_bytes` limit. The default is a resource-safety bound,
+not a statement about a useful maximum speech duration. The probe does not
+measure intelligibility, speaker identity, accent fidelity, cadence, or
+naturalness.
+
+Implementation and OOD validation are recorded in
+[`reports/audio-probe-streaming-ood-validation-2026-08-13.md`](reports/audio-probe-streaming-ood-validation-2026-08-13.md).
 
 Compare the diagnostics from a reference runtime and a candidate runtime:
 

@@ -47,6 +47,52 @@ class AudioProbeTests(unittest.TestCase):
             self.assertTrue(all(result["format_match"].values()))
             self.assertLess(result["candidate_minus_reference"]["rms"], 0)
 
+    def test_streams_stereo_pcm_without_changing_frame_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "stereo.wav"
+            frames = 70_000
+            samples = [1000, -1000] * frames
+            with wave.open(str(path), "wb") as output:
+                output.setnchannels(2)
+                output.setsampwidth(2)
+                output.setframerate(20_000)
+                output.writeframes(struct.pack(f"<{len(samples)}h", *samples))
+
+            result = probe_wav(path)
+
+            self.assertEqual(result["channels"], 2)
+            self.assertEqual(result["frame_count"], frames)
+            self.assertAlmostEqual(result["duration_seconds"], 3.5)
+            self.assertAlmostEqual(result["dc_offset"], 0.0)
+
+    def test_rejects_pcm_payload_over_explicit_resource_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "tone.wav"
+            self._write_tone(path)
+            with self.assertRaisesRegex(ValueError, "analysis limit"):
+                probe_wav(path, max_pcm_bytes=1_000)
+
+    def test_rejects_truncated_pcm_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "tone.wav"
+            self._write_tone(path)
+            path.write_bytes(path.read_bytes()[:-100])
+            with self.assertRaisesRegex(ValueError, "truncated"):
+                probe_wav(path)
+
+    def test_rejects_nonfinite_thresholds_and_invalid_resource_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "tone.wav"
+            self._write_tone(path)
+            for threshold in (float("nan"), float("inf"), -0.1, 1.1):
+                with self.subTest(silence_threshold=threshold):
+                    with self.assertRaisesRegex(ValueError, "silence threshold"):
+                        probe_wav(path, silence_threshold=threshold)
+            for limit in (0, -1, True):
+                with self.subTest(max_pcm_bytes=limit):
+                    with self.assertRaisesRegex(ValueError, "max PCM bytes"):
+                        probe_wav(path, max_pcm_bytes=limit)
+
 
 if __name__ == "__main__":
     unittest.main()
