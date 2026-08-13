@@ -17,6 +17,7 @@ from instavar_voice_lab.attempts import (
 )
 from instavar_voice_lab.cli import main
 from instavar_voice_lab.comparison import compare_matched_candidates
+from instavar_voice_lab.prosody_probe import PROSODY_OBSERVATION_FIELDS
 
 
 class GenerationAttemptTests(unittest.TestCase):
@@ -180,6 +181,8 @@ class GenerationAttemptTests(unittest.TestCase):
                 {"reference_id": "studio", "embedding": [0.2, 0.3]},
                 {"reference_id": "phone", "embedding": [0.3, 0.4]},
             ]
+            for field in PROSODY_OBSERVATION_FIELDS:
+                bound[0][field] = True if field == "prosody_eligible_for_long_form" else 0.25
             bound[0]["evidence"]["asr"] = {
                 "extractor": "asr",
                 "revision": "model-1",
@@ -191,6 +194,12 @@ class GenerationAttemptTests(unittest.TestCase):
                 "revision": "model-2",
                 "input_audio_sha256": bound[0]["audio_sha256"],
                 "extractor_artifact_set_sha256": "c" * 64,
+            }
+            bound[0]["evidence"]["prosody_proxy"] = {
+                "extractor": "prosody-proxy",
+                "revision": "proxy-1",
+                "input_audio_sha256": bound[0]["audio_sha256"],
+                "extractor_artifact_set_sha256": "d" * 64,
             }
             self.assertTrue(runtime_attempt_is_content_bound(bound[0], index=0))
 

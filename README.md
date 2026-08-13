@@ -656,8 +656,8 @@ complete generation-side row, the exact planned sample, the complete plan,
 runtime metrics, producer revision, and live output bytes when an output
 exists. Application rechecks the plan and live audio, rejects stale or reused
 receipts, and adds a per-attempt digest plus the receipt digest to
-`evidence.runtime`. Later ASR, speaker, and audio-probe augmentation does not
-change the generation identity.
+`evidence.runtime`. Later ASR, speaker, audio-probe, and prosody-proxy
+augmentation does not change the generation identity.
 
 A version 1.1 plan that requires real-time factor, generation time, audio
 duration, or peak memory rejects unbound runtime evidence. Legacy plans and
@@ -667,9 +667,10 @@ does not prove honest measurement, that a process loaded declared model bytes,
 hardware isolation, clock validity, or host trust.
 
 Runtime-attempt identity excludes later extractor-owned fields, including ASR
-hypotheses, single-reference and multi-reference speaker embeddings, audio
-probes, and augmentation history. This permits schema 1.4 speaker evidence to
-augment a bound attempt without weakening the original generation receipt.
+hypotheses, single-reference and multi-reference speaker embeddings, audio and
+prosody probes, and augmentation history. This permits schema 1.4 speaker and
+schema 1.6 prosody evidence to augment a bound attempt without weakening the
+original generation receipt.
 Changing a generation-side field such as timing, artifact identity, seed, or
 audio hash still invalidates the binding.
 

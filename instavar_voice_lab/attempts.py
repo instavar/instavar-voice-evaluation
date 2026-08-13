@@ -9,6 +9,7 @@ from typing import Any
 
 from .extraction import verify_observation_audio
 from .observations import validate_objective_observations
+from .prosody_probe import PROSODY_OBSERVATION_FIELDS
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 MUTABLE_REVISIONS = {"latest", "main", "master", "head", "unknown", "unversioned"}
@@ -24,6 +25,7 @@ DERIVED_OBSERVATION_FIELDS = {
     "clipping_fraction",
     "augmentation_history",
     "extractor_failures",
+    *PROSODY_OBSERVATION_FIELDS,
 }
 RUNTIME_BINDING_FIELDS = {
     "generation_plan_sha256",
