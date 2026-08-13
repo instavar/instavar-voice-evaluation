@@ -23,8 +23,7 @@ class GenerationAttemptTests(unittest.TestCase):
     @staticmethod
     def write_tone(path: Path, *, frequency: int = 440, sample_rate: int = 8000) -> None:
         samples = [
-            int(0.4 * 32767 * math.sin(2 * math.pi * frequency * index / sample_rate))
-            for index in range(sample_rate)
+            int(0.4 * 32767 * math.sin(2 * math.pi * frequency * index / sample_rate)) for index in range(sample_rate)
         ]
         with wave.open(str(path), "wb") as output:
             output.setnchannels(1)
@@ -176,11 +175,22 @@ class GenerationAttemptTests(unittest.TestCase):
             rows, plan = self.fixture(root)
             _, bound = self.bind(rows, plan, root)
             bound[0]["hypothesis_text"] = "hello world"
+            bound[0]["speaker_embedding"] = [0.1, 0.2]
+            bound[0]["reference_speaker_embeddings"] = [
+                {"reference_id": "studio", "embedding": [0.2, 0.3]},
+                {"reference_id": "phone", "embedding": [0.3, 0.4]},
+            ]
             bound[0]["evidence"]["asr"] = {
                 "extractor": "asr",
                 "revision": "model-1",
                 "input_audio_sha256": bound[0]["audio_sha256"],
                 "extractor_artifact_set_sha256": "b" * 64,
+            }
+            bound[0]["evidence"]["speaker_encoder"] = {
+                "extractor": "speaker-encoder",
+                "revision": "model-2",
+                "input_audio_sha256": bound[0]["audio_sha256"],
+                "extractor_artifact_set_sha256": "c" * 64,
             }
             self.assertTrue(runtime_attempt_is_content_bound(bound[0], index=0))
 

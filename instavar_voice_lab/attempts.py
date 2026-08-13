@@ -17,6 +17,7 @@ RUNTIME_METRIC_FIELDS = ("generation_seconds", "audio_duration_seconds", "peak_m
 DERIVED_OBSERVATION_FIELDS = {
     "hypothesis_text",
     "reference_speaker_embedding",
+    "reference_speaker_embeddings",
     "speaker_embedding",
     "sample_rate_hz",
     "silence_fraction",

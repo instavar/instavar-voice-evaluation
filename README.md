@@ -666,6 +666,13 @@ The receipt detects accidental or post-hoc substitution of declared fields. It
 does not prove honest measurement, that a process loaded declared model bytes,
 hardware isolation, clock validity, or host trust.
 
+Runtime-attempt identity excludes later extractor-owned fields, including ASR
+hypotheses, single-reference and multi-reference speaker embeddings, audio
+probes, and augmentation history. This permits schema 1.4 speaker evidence to
+augment a bound attempt without weakening the original generation receipt.
+Changing a generation-side field such as timing, artifact identity, seed, or
+audio hash still invalidates the binding.
+
 ## Bind extractor results to generated audio
 
 Do not add ASR, speaker, or audio-probe values directly to generation rows.
