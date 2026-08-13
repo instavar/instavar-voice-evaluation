@@ -34,8 +34,11 @@ Dependency-free tests cover:
 - NaN, infinity, negative, and greater-than-one silence thresholds; and
 - zero, negative, and Boolean resource limits.
 
-The complete dependency-free suite passed 219 tests locally. Package build and
-hosted CI are recorded with the release commit after publication.
+The complete dependency-free suite passed 219 tests locally. `uv build`
+produced the 0.40 source distribution and wheel, and focused Ruff E/F checks
+passed. Implementation commit
+`f04ccd31e64c0c1f4d0145be7e88242f25b964b4` passed hosted Quality run
+`31681987993` on 2026-08-13.
 
 ## Scope and boundary
 
