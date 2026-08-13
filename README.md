@@ -380,7 +380,19 @@ instavar-voice-eval audit-corpus \
   --output evaluation/corpus-audit.json
 ```
 
-The audit hashes each manifest and fails if a recording group crosses splits. It checks that referenced audio files exist, but it does not decode every audio format or prove that the transcript matches the recording.
+The audit hashes each manifest and fails if a recording group crosses splits.
+Version 0.41 also hashes every referenced audio file and rejects byte-identical
+content even when copies, hard links, or different filenames make the paths
+look distinct. The file identity is checked before and after hashing so a
+concurrent replacement cannot leave a passing content digest. Transcript
+duplicate warnings use NFKC normalization, whitespace folding, and casefolding
+so compatibility-width Unicode cannot evade the warning. It checks that
+referenced audio files exist, but it does not decode every audio format, detect
+near-duplicate recordings, identify the same speaker across different clips,
+or prove that the transcript matches the recording.
+
+Implementation and OOD validation are recorded in
+[`reports/corpus-content-leakage-ood-validation-2026-08-13.md`](reports/corpus-content-leakage-ood-validation-2026-08-13.md).
 
 Bind audited raw splits to model-ready artifacts with a content-addressed lineage receipt:
 

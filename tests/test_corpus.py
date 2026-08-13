@@ -16,7 +16,7 @@ class CorpusAuditTests(unittest.TestCase):
             groups["test"] = groups["train"]
         for split in ("train", "validation", "test"):
             audio = root / f"{split}.wav"
-            audio.write_bytes(b"fixture")
+            audio.write_bytes(f"fixture:{split}".encode())
             manifest = root / f"{split}.jsonl"
             row = {
                 "audio": audio.name,
@@ -65,6 +65,39 @@ class CorpusAuditTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "failed")
             self.assertFalse(result["grouped_split_verified"])
+
+    def test_rejects_copied_audio_content_under_a_different_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            splits = self.fixture(root)
+            (root / "test.wav").write_bytes((root / "train.wav").read_bytes())
+
+            result = audit_corpus(splits, group_field="recording_id")
+
+            self.assertEqual(result["status"], "failed")
+            self.assertTrue(
+                any("audio content duplicates train:1" in error for error in result["errors"])
+            )
+
+    def test_nfkc_equivalent_transcripts_emit_duplicate_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            splits = self.fixture(root)
+            train = json.loads(splits["train"].read_text(encoding="utf-8"))
+            validation = json.loads(splits["validation"].read_text(encoding="utf-8"))
+            train["text"] = "ＡＢＣ voice sample"
+            validation["text"] = "ABC voice sample"
+            splits["train"].write_text(json.dumps(train) + "\n", encoding="utf-8")
+            splits["validation"].write_text(
+                json.dumps(validation) + "\n", encoding="utf-8"
+            )
+
+            result = audit_corpus(splits, group_field="recording_id")
+
+            self.assertEqual(result["status"], "passed")
+            self.assertTrue(
+                any("text duplicates train:1" in warning for warning in result["warnings"])
+            )
 
 
 if __name__ == "__main__":

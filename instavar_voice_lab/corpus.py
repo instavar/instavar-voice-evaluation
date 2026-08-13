@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +13,25 @@ def _manifest_sha256(path: Path) -> str:
     with path.open("rb") as source:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _stat_fingerprint(value: os.stat_result) -> tuple[int, int, int, int]:
+    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
+
+
+def _stable_file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        before = os.fstat(source.fileno())
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+        after = os.fstat(source.fileno())
+    current = path.stat()
+    if _stat_fingerprint(before) != _stat_fingerprint(after) or _stat_fingerprint(
+        after
+    ) != _stat_fingerprint(current):
+        raise ValueError("audio file changed while its content hash was computed")
     return digest.hexdigest()
 
 
@@ -29,18 +50,22 @@ def audit_corpus(
     text_field: str = "text",
     group_field: str | None = None,
 ) -> dict[str, Any]:
-    required_splits = {"train", "validation", "test"}
+    required_split_order = ("train", "validation", "test")
+    required_splits = set(required_split_order)
     errors: list[str] = []
     warnings: list[str] = []
     if set(splits) != required_splits:
         errors.append("splits must declare exactly train, validation, and test")
 
     seen_audio: dict[str, tuple[str, int]] = {}
+    seen_audio_content: dict[str, tuple[str, int]] = {}
     seen_group: dict[str, tuple[str, int]] = {}
     seen_text: dict[str, tuple[str, int]] = {}
     split_reports: dict[str, dict[str, Any]] = {}
 
-    for split_name in sorted(splits):
+    split_order = [name for name in required_split_order if name in splits]
+    split_order.extend(sorted(set(splits) - required_splits))
+    for split_name in split_order:
         path = splits[split_name]
         report = {
             "path": str(path),
@@ -73,7 +98,9 @@ def audit_corpus(
                 if not isinstance(text, str) or not text.strip():
                     errors.append(f"{split_name}:{line_number}: {text_field} must be non-empty text")
                     continue
-                normalized_text = " ".join(text.split()).casefold()
+                normalized_text = " ".join(
+                    unicodedata.normalize("NFKC", text).split()
+                ).casefold()
                 previous_text = seen_text.get(normalized_text)
                 if previous_text and previous_text[0] != split_name:
                     warnings.append(
@@ -100,6 +127,24 @@ def audit_corpus(
                     )
                     continue
                 seen_audio[resolved_audio] = (split_name, line_number)
+                try:
+                    audio_sha256 = _stable_file_sha256(audio_path)
+                except OSError as error:
+                    errors.append(
+                        f"{split_name}:{line_number}: cannot hash audio file: {error}"
+                    )
+                    continue
+                except ValueError as error:
+                    errors.append(f"{split_name}:{line_number}: {error}")
+                    continue
+                previous_content = seen_audio_content.get(audio_sha256)
+                if previous_content:
+                    errors.append(
+                        f"{split_name}:{line_number}: audio content duplicates "
+                        f"{previous_content[0]}:{previous_content[1]} under a different path"
+                    )
+                    continue
+                seen_audio_content[audio_sha256] = (split_name, line_number)
 
                 if group_field:
                     group = row.get(group_field)
