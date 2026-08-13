@@ -257,6 +257,13 @@ failures and emits no ranking or aggregate quality score. Its output is
 ineligible for matched adaptation comparison because a historical archive is
 not a frozen generation plan.
 
+Implementation `6a9586139ba423bea8f15997127657a981f4636f` and automatic
+content-revision correction `f199b3ab877543be5a0702db17a321d4cb372267`
+passed hosted Quality runs `31664365741` and `31664468941` on 2026-08-13. The
+retained six-audio audit, OOD correction, exact digests, and claim boundary are
+recorded in
+[`reports/historical-prosody-audit-validation-2026-08-13.md`](reports/historical-prosody-audit-validation-2026-08-13.md).
+
 ## Bind artifacts across runtimes
 
 Before comparing runtimes, write a local binding plan that names the source
