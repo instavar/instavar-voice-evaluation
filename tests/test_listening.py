@@ -616,6 +616,17 @@ class ListeningPackTests(unittest.TestCase):
             }
             for row in generation_plan["samples"]
         ]
+        missing_seed = [dict(row) for row in samples]
+        del missing_seed[0]["seed"]
+        with self.assertRaisesRegex(ValueError, "sample 0 is missing: seed"):
+            build_blind_pack(
+                missing_seed,
+                None,
+                seed=42,
+                assignment_plan=assignment_plan,
+                generation_plan=generation_plan,
+            )
+
         samples[0]["candidate_id"] = "spoofed"
         with self.assertRaisesRegex(ValueError, "does not match assignment field candidate_id"):
             build_blind_pack(

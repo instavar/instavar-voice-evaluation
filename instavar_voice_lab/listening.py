@@ -799,6 +799,8 @@ def build_blind_pack(
     if len(samples) < 2:
         raise ValueError("at least two samples are required")
     required = {"sample_id", "candidate_id", "prompt_id", "audio_path"}
+    if assignment_plan is not None:
+        required.add("seed")
     for index, sample in enumerate(samples):
         missing = required - sample.keys()
         if missing:
