@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://instavar.com/schemas/resume-run-receipt.schema.json",
+  "title": "Instavar Voice resume run receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "producer_repository",
+    "producer_revision",
+    "backend_id",
+    "adaptation_mode",
+    "base_artifact_sha256",
+    "dataset_lineage_sha256",
+    "training_controls_sha256",
+    "initial_state_sha256",
+    "target_updates",
+    "completed_updates",
+    "execution_mode"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "run_id": { "$ref": "#/$defs/identifier" },
+    "producer_repository": { "type": "string", "minLength": 1 },
+    "producer_revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "backend_id": { "$ref": "#/$defs/identifier" },
+    "adaptation_mode": {
+      "enum": ["lora", "full_sft", "partial_sft", "prompt_adapter"]
+    },
+    "base_artifact_sha256": { "$ref": "#/$defs/sha256" },
+    "dataset_lineage_sha256": { "$ref": "#/$defs/sha256" },
+    "training_controls_sha256": { "$ref": "#/$defs/sha256" },
+    "initial_state_sha256": { "$ref": "#/$defs/sha256" },
+    "target_updates": { "type": "integer", "minimum": 1 },
+    "completed_updates": { "type": "integer", "minimum": 1 },
+    "execution_mode": { "enum": ["uninterrupted", "interrupted_resumed"] },
+    "resume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interruption_observed",
+        "checkpoint_completed_updates",
+        "resumed_from_completed_updates",
+        "interruption_signal",
+        "interruption_receipt_sha256"
+      ],
+      "properties": {
+        "interruption_observed": { "const": true },
+        "checkpoint_completed_updates": { "type": "integer", "minimum": 1 },
+        "resumed_from_completed_updates": { "type": "integer", "minimum": 1 },
+        "interruption_signal": { "type": "string", "minLength": 1 },
+        "interruption_receipt_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "execution_mode": { "const": "interrupted_resumed" } },
+        "required": ["execution_mode"]
+      },
+      "then": { "required": ["resume"] },
+      "else": { "not": { "required": ["resume"] } }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

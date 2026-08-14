@@ -42,6 +42,7 @@ from .listening import (
 from .metrics import score_objective_observations
 from .observations import validate_objective_observations
 from .prosody_probe import compare_prosody_proxies, probe_prosody_proxy
+from .resume import compare_resume_artifacts
 from .runtime_artifacts import (
     build_runtime_artifact_manifest,
     validate_runtime_artifact_manifest,
@@ -181,6 +182,13 @@ def build_parser() -> argparse.ArgumentParser:
     verify_runtime_artifacts.add_argument("manifest", type=Path)
     verify_runtime_artifacts.add_argument("binding_plan", type=Path)
     verify_runtime_artifacts.add_argument("--report", type=Path)
+
+    compare_resume = commands.add_parser(
+        "compare-resume-artifacts",
+        help="compare independent uninterrupted and interrupted-resumed final artifact sets",
+    )
+    compare_resume.add_argument("plan", type=Path)
+    compare_resume.add_argument("--output", type=Path, required=True)
 
     probe = commands.add_parser("probe-audio", help="record deterministic diagnostics for a PCM WAV file")
     probe.add_argument("wav", type=Path)
@@ -694,6 +702,17 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(json.dumps(result, indent=2, sort_keys=True))
         return 0
+    if args.command == "compare-resume-artifacts":
+        try:
+            result = compare_resume_artifacts(
+                _read_json(args.plan),
+                base_dir=args.plan.parent.resolve(),
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        _write_json(args.output, result)
+        return 0 if result["status"] == "passed" else 1
     if args.command == "probe-audio":
         try:
             result = probe_wav(args.wav)

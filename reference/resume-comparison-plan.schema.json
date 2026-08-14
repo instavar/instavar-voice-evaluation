@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://instavar.com/schemas/resume-comparison-plan.schema.json",
+  "title": "Instavar Voice resume artifact comparison plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "comparison_id",
+    "required_artifact_roles",
+    "interruption_receipt",
+    "uninterrupted",
+    "resumed"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "comparison_id": { "$ref": "#/$defs/identifier" },
+    "required_artifact_roles": {
+      "type": "array",
+      "minItems": 5,
+      "uniqueItems": true,
+      "contains": { "const": "model_state" },
+      "allOf": [
+        { "contains": { "const": "optimizer_state" } },
+        { "contains": { "const": "scheduler_state" } },
+        { "contains": { "const": "trainer_state" } },
+        { "contains": { "const": "rng_state" } }
+      ],
+      "items": { "$ref": "#/$defs/identifier" }
+    },
+    "interruption_receipt": { "$ref": "#/$defs/path" },
+    "uninterrupted": { "$ref": "#/$defs/run" },
+    "resumed": { "$ref": "#/$defs/run" }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "path": { "type": "string", "minLength": 1 },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "kind", "path"],
+      "properties": {
+        "role": { "$ref": "#/$defs/identifier" },
+        "kind": { "enum": ["file", "tree"] },
+        "path": { "$ref": "#/$defs/path" }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receipt", "artifacts"],
+      "properties": {
+        "receipt": { "$ref": "#/$defs/path" },
+        "artifacts": {
+          "type": "array",
+          "minItems": 5,
+          "items": { "$ref": "#/$defs/artifact" }
+        }
+      }
+    }
+  }
+}

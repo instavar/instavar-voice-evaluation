@@ -367,6 +367,80 @@ perceptually equivalent. Converted MLX, ONNX, TensorRT, quantized, or merged
 representations remain derived until evaluated under an explicit conversion
 contract.
 
+## Compare interrupted and resumed training artifacts
+
+Version 0.44 adds a fail-closed comparison for one uninterrupted control run
+and one independently interrupted and resumed run. Each run receipt binds the
+same repository revision, backend, adaptation mode, Base artifact, dataset
+lineage, training controls, initial state, and target update count. The resumed
+receipt must also bind a live interruption receipt and a checkpoint boundary
+strictly before the target update.
+
+Create a local plan that points to the two receipts and to independently stored
+final state files or trees:
+
+```json
+{
+  "schema_version": "1.0.0",
+  "comparison_id": "f5-lora-two-update-resume",
+  "required_artifact_roles": [
+    "model_state",
+    "optimizer_state",
+    "scheduler_state",
+    "trainer_state",
+    "rng_state"
+  ],
+  "interruption_receipt": "resumed/interruption-receipt.json",
+  "uninterrupted": {
+    "receipt": "uninterrupted/run-receipt.json",
+    "artifacts": [
+      { "role": "model_state", "kind": "file", "path": "uninterrupted/adapter.safetensors" },
+      { "role": "optimizer_state", "kind": "file", "path": "uninterrupted/optimizer.pt" },
+      { "role": "scheduler_state", "kind": "file", "path": "uninterrupted/scheduler.pt" },
+      { "role": "trainer_state", "kind": "file", "path": "uninterrupted/trainer-state.json" },
+      { "role": "rng_state", "kind": "file", "path": "uninterrupted/rng-state.pt" }
+    ]
+  },
+  "resumed": {
+    "receipt": "resumed/run-receipt.json",
+    "artifacts": [
+      { "role": "model_state", "kind": "file", "path": "resumed/adapter.safetensors" },
+      { "role": "optimizer_state", "kind": "file", "path": "resumed/optimizer.pt" },
+      { "role": "scheduler_state", "kind": "file", "path": "resumed/scheduler.pt" },
+      { "role": "trainer_state", "kind": "file", "path": "resumed/trainer-state.json" },
+      { "role": "rng_state", "kind": "file", "path": "resumed/rng-state.pt" }
+    ]
+  }
+}
+```
+
+Then compare the live bytes:
+
+```bash
+instavar-voice-eval compare-resume-artifacts resume-plan.json \
+  --output resume-artifact-comparison.json
+```
+
+The command rejects missing core state, conditioning drift, incomplete runs,
+unobserved or post-target interruptions, asymmetric roles, symlinks, shared
+paths, hardlinks, control-file aliases, and mutation during comparison. A
+content mismatch is retained as a `negative_result` report with exit status 1;
+an invalid comparison exits 2 without manufacturing a report.
+
+A passing report establishes byte equality only for the named final state
+roles under the two declared receipts. It always sets
+`proves_numerical_resume_equivalence`, `proves_training_semantics`, and
+`proves_model_quality` to false. Version 0.44 requires decomposed model,
+optimizer, scheduler, trainer, and RNG state. A monolithic checkpoint whose
+internal state inventory is not independently exposed remains outside this
+claim tier rather than being treated as complete by assertion.
+
+Machine-readable contracts are in
+[`reference/resume-run-receipt.schema.json`](reference/resume-run-receipt.schema.json),
+[`reference/resume-comparison-plan.schema.json`](reference/resume-comparison-plan.schema.json),
+and
+[`reference/resume-artifact-comparison.schema.json`](reference/resume-artifact-comparison.schema.json).
+
 ## Audit a training corpus
 
 Audit file presence, non-empty text, duplicate audio, and parent or recording leakage before a training preflight:

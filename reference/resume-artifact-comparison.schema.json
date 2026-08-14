@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://instavar.com/schemas/resume-artifact-comparison.schema.json",
+  "title": "Instavar Voice resume artifact comparison report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "comparison_id",
+    "status",
+    "claim_tier",
+    "conditioning",
+    "runs",
+    "interruption",
+    "independent_artifact_storage_verified",
+    "required_artifact_roles",
+    "role_results",
+    "matched_roles",
+    "mismatched_roles",
+    "exact_resume_artifact_equivalence",
+    "proves_numerical_resume_equivalence",
+    "proves_training_semantics",
+    "proves_model_quality",
+    "evidence_boundary",
+    "report_sha256"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "comparison_id": { "$ref": "#/$defs/identifier" },
+    "status": { "enum": ["passed", "negative_result"] },
+    "claim_tier": {
+      "enum": ["byte_exact_declared_artifact_set", "artifact_mismatch"]
+    },
+    "conditioning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer_repository",
+        "producer_revision",
+        "backend_id",
+        "adaptation_mode",
+        "base_artifact_sha256",
+        "dataset_lineage_sha256",
+        "training_controls_sha256",
+        "initial_state_sha256",
+        "target_updates"
+      ],
+      "properties": {
+        "producer_repository": { "type": "string", "minLength": 1 },
+        "producer_revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "backend_id": { "$ref": "#/$defs/identifier" },
+        "adaptation_mode": {
+          "enum": ["lora", "full_sft", "partial_sft", "prompt_adapter"]
+        },
+        "base_artifact_sha256": { "$ref": "#/$defs/sha256" },
+        "dataset_lineage_sha256": { "$ref": "#/$defs/sha256" },
+        "training_controls_sha256": { "$ref": "#/$defs/sha256" },
+        "initial_state_sha256": { "$ref": "#/$defs/sha256" },
+        "target_updates": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "runs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uninterrupted", "resumed"],
+      "properties": {
+        "uninterrupted": { "$ref": "#/$defs/run" },
+        "resumed": { "$ref": "#/$defs/run" }
+      }
+    },
+    "interruption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interruption_observed",
+        "checkpoint_completed_updates",
+        "resumed_from_completed_updates",
+        "interruption_signal",
+        "interruption_receipt_sha256",
+        "receipt_verified"
+      ],
+      "properties": {
+        "interruption_observed": { "const": true },
+        "checkpoint_completed_updates": { "type": "integer", "minimum": 1 },
+        "resumed_from_completed_updates": { "type": "integer", "minimum": 1 },
+        "interruption_signal": { "type": "string", "minLength": 1 },
+        "interruption_receipt_sha256": { "$ref": "#/$defs/sha256" },
+        "receipt_verified": { "const": true }
+      }
+    },
+    "independent_artifact_storage_verified": { "const": true },
+    "required_artifact_roles": {
+      "type": "array",
+      "minItems": 5,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/identifier" }
+    },
+    "role_results": {
+      "type": "array",
+      "minItems": 5,
+      "items": { "$ref": "#/$defs/roleResult" }
+    },
+    "matched_roles": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/identifier" }
+    },
+    "mismatched_roles": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/identifier" }
+    },
+    "exact_resume_artifact_equivalence": { "type": "boolean" },
+    "proves_numerical_resume_equivalence": { "const": false },
+    "proves_training_semantics": { "const": false },
+    "proves_model_quality": { "const": false },
+    "evidence_boundary": { "type": "string", "minLength": 1 },
+    "report_sha256": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "receipt_sha256", "artifact_set_sha256"],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/identifier" },
+        "receipt_sha256": { "$ref": "#/$defs/sha256" },
+        "artifact_set_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "roleResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "kind",
+        "byte_exact",
+        "uninterrupted_sha256",
+        "resumed_sha256",
+        "uninterrupted_bytes",
+        "resumed_bytes"
+      ],
+      "properties": {
+        "role": { "$ref": "#/$defs/identifier" },
+        "kind": { "enum": ["file", "tree"] },
+        "byte_exact": { "type": "boolean" },
+        "uninterrupted_sha256": { "$ref": "#/$defs/sha256" },
+        "resumed_sha256": { "$ref": "#/$defs/sha256" },
+        "uninterrupted_bytes": { "type": "integer", "minimum": 1 },
+        "resumed_bytes": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}
