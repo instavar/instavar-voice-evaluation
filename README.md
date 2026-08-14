@@ -652,6 +652,10 @@ instavar-voice-eval build-listening-pack samples.json \
   --seed 20260812
 ```
 
+Plan-bound mode validates `seed` as a required input field before comparing the
+sample against its frozen assignment. Legacy `--criteria` mode does not require
+a plan seed.
+
 The rater file is a JSON array such as `["rater-001", "rater-002"]`. Use
 stable pseudonyms rather than names or email addresses. The review file contains
 no candidate identifiers or source filenames. Each

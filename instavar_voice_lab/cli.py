@@ -272,7 +272,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     blind = commands.add_parser("build-listening-pack", help="create blind review and reveal mapping documents")
     blind.add_argument(
-        "samples", type=Path, help="JSON array of sample_id, candidate_id, prompt_id, and audio_path rows"
+        "samples",
+        type=Path,
+        help=(
+            "JSON array of sample_id, candidate_id, prompt_id, and audio_path rows; "
+            "seed is also required with --assignment-plan"
+        ),
     )
     blind.add_argument("--criteria", type=Path, help="JSON array of criterion names for legacy all-sample routing")
     blind.add_argument("--assignment-plan", type=Path, help="preregistered plan-bound listening assignments")
