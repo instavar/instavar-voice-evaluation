@@ -150,7 +150,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     audit.add_argument("--audio-field", default="audio")
     audit.add_argument("--text-field", default="text")
-    audit.add_argument("--group-field", default="")
+    audit_grouping = audit.add_mutually_exclusive_group()
+    audit_grouping.add_argument("--group-field", default="")
+    audit_grouping.add_argument(
+        "--audio-path-group-regex",
+        default="",
+        help="extract one stable group ID from each audio filename",
+    )
+    audit.add_argument(
+        "--check-pcm-near-duplicates",
+        action="store_true",
+        help="emit conservative cross-split PCM similarity review candidates",
+    )
     audit.add_argument("--output", type=Path)
 
     build_lineage = commands.add_parser(
@@ -666,6 +677,8 @@ def main(argv: list[str] | None = None) -> int:
             audio_field=args.audio_field,
             text_field=args.text_field,
             group_field=args.group_field or None,
+            check_pcm_near_duplicates=args.check_pcm_near_duplicates,
+            audio_path_group_regex=args.audio_path_group_regex or None,
         )
         if args.output:
             _write_json(args.output, result)

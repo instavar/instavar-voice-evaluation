@@ -3,22 +3,27 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import unicodedata
 from pathlib import Path
 from types import TracebackType
 from typing import Any, BinaryIO, Iterator
 
+from .pcm_similarity import PcmSimilarityFingerprint, compare_pcm_fingerprints, fingerprint_pcm_wav
+
 
 DEFAULT_MAX_MANIFEST_BYTES = 512 * 1024 * 1024
 DEFAULT_MAX_MANIFEST_LINE_BYTES = 8 * 1024 * 1024
 _MANIFEST_READ_CHUNK_BYTES = 64 * 1024
+_MAX_PCM_REVIEW_CANDIDATES = 1_000
+_MAX_PCM_PAIR_COMPARISONS = 100_000
 
 
 def _stat_fingerprint(value: os.stat_result) -> tuple[int, int, int, int]:
     return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
 
 
-def _stable_file_sha256(path: Path) -> str:
+def _stable_file_sha256(path: Path) -> tuple[str, tuple[int, int, int, int]]:
     digest = hashlib.sha256()
     with path.open("rb") as source:
         before = os.fstat(source.fileno())
@@ -28,7 +33,7 @@ def _stable_file_sha256(path: Path) -> str:
     current = path.stat()
     if _stat_fingerprint(before) != _stat_fingerprint(after) or _stat_fingerprint(after) != _stat_fingerprint(current):
         raise ValueError("audio file changed while its content hash was computed")
-    return digest.hexdigest()
+    return digest.hexdigest(), _stat_fingerprint(current)
 
 
 class _StableManifestSource:
@@ -133,7 +138,27 @@ def audit_corpus(
     group_field: str | None = None,
     max_manifest_bytes: int = DEFAULT_MAX_MANIFEST_BYTES,
     max_manifest_line_bytes: int = DEFAULT_MAX_MANIFEST_LINE_BYTES,
+    check_pcm_near_duplicates: bool = False,
+    audio_path_group_regex: str | None = None,
 ) -> dict[str, Any]:
+    if not isinstance(check_pcm_near_duplicates, bool):
+        raise ValueError("check_pcm_near_duplicates must be a boolean")
+    if group_field and audio_path_group_regex:
+        raise ValueError("group_field and audio_path_group_regex are mutually exclusive")
+    group_pattern: re.Pattern[str] | None = None
+    if audio_path_group_regex is not None:
+        if (
+            not isinstance(audio_path_group_regex, str)
+            or not audio_path_group_regex
+            or len(audio_path_group_regex) > 512
+        ):
+            raise ValueError("audio_path_group_regex must be a non-empty string no longer than 512 characters")
+        try:
+            group_pattern = re.compile(audio_path_group_regex)
+        except re.error as error:
+            raise ValueError(f"audio_path_group_regex is invalid: {error}") from error
+        if group_pattern.groups != 1:
+            raise ValueError("audio_path_group_regex must contain exactly one capture group")
     for name, value, ceiling in (
         ("max_manifest_bytes", max_manifest_bytes, DEFAULT_MAX_MANIFEST_BYTES),
         (
@@ -158,6 +183,8 @@ def audit_corpus(
     seen_audio_content: dict[str, tuple[str, int]] = {}
     seen_group: dict[str, tuple[str, int]] = {}
     seen_text: dict[str, tuple[str, int]] = {}
+    pcm_fingerprints: list[tuple[str, int, PcmSimilarityFingerprint]] = []
+    pcm_skipped_by_reason: dict[str, int] = {}
     split_reports: dict[str, dict[str, Any]] = {}
 
     split_order = [name for name in required_split_order if name in splits]
@@ -233,7 +260,7 @@ def audit_corpus(
                         continue
                     seen_audio[resolved_audio] = (split_name, line_number)
                     try:
-                        audio_sha256 = _stable_file_sha256(audio_path)
+                        audio_sha256, audio_stat_fingerprint = _stable_file_sha256(audio_path)
                     except OSError as error:
                         errors.append(f"{split_name}:{line_number}: cannot hash audio file: {error}")
                         continue
@@ -249,12 +276,25 @@ def audit_corpus(
                         continue
                     seen_audio_content[audio_sha256] = (split_name, line_number)
 
-                    if group_field:
-                        group = row.get(group_field)
-                        if not isinstance(group, str) or not group.strip():
-                            errors.append(f"{split_name}:{line_number}: {group_field} must be a non-empty string")
-                            continue
-                        group = group.strip()
+                    if group_field or group_pattern:
+                        if group_field:
+                            group = row.get(group_field)
+                            if not isinstance(group, str) or not group.strip():
+                                errors.append(f"{split_name}:{line_number}: {group_field} must be a non-empty string")
+                                continue
+                            group = group.strip()
+                        else:
+                            assert group_pattern is not None
+                            if len(audio_value) > 4096:
+                                errors.append(
+                                    f"{split_name}:{line_number}: audio path is too long for group extraction"
+                                )
+                                continue
+                            match = group_pattern.search(Path(audio_value).name)
+                            group = match.group(1).strip() if match and match.group(1) else ""
+                            if not group:
+                                errors.append(f"{split_name}:{line_number}: audio path does not match the group regex")
+                                continue
                         split_groups.add(group)
                         previous_group = seen_group.get(group)
                         if previous_group and previous_group[0] != split_name:
@@ -264,6 +304,18 @@ def audit_corpus(
                             )
                             continue
                         seen_group.setdefault(group, (split_name, line_number))
+
+                    if check_pcm_near_duplicates:
+                        try:
+                            fingerprint = fingerprint_pcm_wav(
+                                audio_path,
+                                expected_stat_fingerprint=audio_stat_fingerprint,
+                            )
+                        except (OSError, ValueError) as error:
+                            reason = str(error)
+                            pcm_skipped_by_reason[reason] = pcm_skipped_by_reason.get(reason, 0) + 1
+                        else:
+                            pcm_fingerprints.append((split_name, line_number, fingerprint))
 
                     report["valid_rows"] += 1
                 report["manifest_sha256"] = source.finish()
@@ -277,17 +329,84 @@ def audit_corpus(
         elif report["valid_rows"] == 0:
             errors.append(f"{split_name}: manifest has no valid rows")
 
+    pcm_candidates: list[dict[str, Any]] = []
+    pcm_candidate_limit_reached = False
+    pcm_pair_comparisons = 0
+    pcm_pair_comparison_limit_reached = False
+    if check_pcm_near_duplicates:
+        band_index: dict[tuple[int, str], list[int]] = {}
+        for right_index, (right_split, right_line, right_fingerprint) in enumerate(pcm_fingerprints):
+            possible_matches: dict[int, int] = {}
+            for band_number, band_hash in enumerate(right_fingerprint.bands):
+                for left_index in band_index.get((band_number, band_hash), []):
+                    possible_matches[left_index] = possible_matches.get(left_index, 0) + 1
+            for left_index, shared_bands in sorted(possible_matches.items()):
+                if shared_bands < 3:
+                    continue
+                left_split, left_line, left_fingerprint = pcm_fingerprints[left_index]
+                if left_split == right_split:
+                    continue
+                duration_ratio = min(
+                    left_fingerprint.active_duration_seconds,
+                    right_fingerprint.active_duration_seconds,
+                ) / max(
+                    left_fingerprint.active_duration_seconds,
+                    right_fingerprint.active_duration_seconds,
+                )
+                if duration_ratio < 0.92:
+                    continue
+                pcm_pair_comparisons += 1
+                if pcm_pair_comparisons > _MAX_PCM_PAIR_COMPARISONS:
+                    pcm_pair_comparison_limit_reached = True
+                    break
+                comparison = compare_pcm_fingerprints(left_fingerprint, right_fingerprint)
+                if not comparison.pop("review_candidate"):
+                    continue
+                candidate = {
+                    "earlier": {"split": left_split, "line": left_line},
+                    "later": {"split": right_split, "line": right_line},
+                    **comparison,
+                    "classification": "review_required_not_proven_duplicate",
+                }
+                pcm_candidates.append(candidate)
+                warnings.append(
+                    f"{right_split}:{right_line}: PCM similarity review candidate with {left_split}:{left_line}"
+                )
+                if len(pcm_candidates) >= _MAX_PCM_REVIEW_CANDIDATES:
+                    pcm_candidate_limit_reached = True
+                    break
+            for band_number, band_hash in enumerate(right_fingerprint.bands):
+                band_index.setdefault((band_number, band_hash), []).append(right_index)
+            if pcm_candidate_limit_reached or pcm_pair_comparison_limit_reached:
+                break
+
     return {
-        "schema_version": "1.1.0",
+        "schema_version": "1.2.0",
         "status": "passed" if not errors else "failed",
         "audio_field": audio_field,
         "text_field": text_field,
         "group_field": group_field,
+        "audio_path_group_regex": audio_path_group_regex,
         "limits": {
             "max_manifest_bytes": max_manifest_bytes,
             "max_manifest_line_bytes": max_manifest_line_bytes,
         },
-        "grouped_split_verified": bool(group_field) and not errors,
+        "grouped_split_verified": bool(group_field or group_pattern) and not errors,
+        "pcm_near_duplicate_review": {
+            "enabled": check_pcm_near_duplicates,
+            "algorithm": "relative_energy_and_zero_crossing_envelope_v1" if check_pcm_near_duplicates else None,
+            "eligible_rows": len(pcm_fingerprints),
+            "skipped_rows": sum(pcm_skipped_by_reason.values()),
+            "skipped_by_reason": dict(sorted(pcm_skipped_by_reason.items())),
+            "candidate_count": len(pcm_candidates),
+            "candidate_limit": _MAX_PCM_REVIEW_CANDIDATES,
+            "candidate_limit_reached": pcm_candidate_limit_reached,
+            "pair_comparisons": min(pcm_pair_comparisons, _MAX_PCM_PAIR_COMPARISONS),
+            "pair_comparison_limit": _MAX_PCM_PAIR_COMPARISONS,
+            "pair_comparison_limit_reached": pcm_pair_comparison_limit_reached,
+            "candidates": pcm_candidates,
+            "proves_duplicate_audio": False,
+        },
         "splits": split_reports,
         "errors": errors,
         "warnings": warnings,
