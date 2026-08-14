@@ -9,7 +9,11 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from instavar_voice_lab.cli import main
-from instavar_voice_lab.resume import CORE_STATE_ROLES, compare_resume_artifacts
+from instavar_voice_lab.resume import (
+    CORE_STATE_ROLES,
+    build_resume_run_receipt,
+    compare_resume_artifacts,
+)
 
 
 REVISION = "a" * 40
@@ -92,6 +96,58 @@ def build_fixture(root: Path) -> tuple[dict, Path]:
     return plan, root / "plan.json"
 
 
+def build_live_conditioning_fixture(root: Path) -> tuple[dict, Path]:
+    plan, plan_path = build_fixture(root)
+    conditioning_dir = root / "conditioning"
+    conditioning_dir.mkdir()
+    base_dir = conditioning_dir / "base"
+    base_dir.mkdir()
+    (base_dir / "model.bin").write_bytes(b"base model\n")
+    for name in ("dataset-lineage.json", "training-controls.json", "initial-state.bin"):
+        (conditioning_dir / name).write_bytes(f"{name}\n".encode())
+    identity_artifacts = {
+        "base_artifact": (base_dir, "tree"),
+        "dataset_lineage": (conditioning_dir / "dataset-lineage.json", "file"),
+        "training_controls": (conditioning_dir / "training-controls.json", "file"),
+        "initial_state": (conditioning_dir / "initial-state.bin", "file"),
+    }
+    interruption = root / "interruption.txt"
+    uninterrupted = build_resume_run_receipt(
+        run_id="run-uninterrupted",
+        producer_repository="instavar/test-tts",
+        producer_revision=REVISION,
+        backend_id="test-lora-pytorch",
+        adaptation_mode="lora",
+        target_updates=2,
+        completed_updates=2,
+        execution_mode="uninterrupted",
+        identity_artifacts=identity_artifacts,
+    )
+    resumed = build_resume_run_receipt(
+        run_id="run-resumed",
+        producer_repository="instavar/test-tts",
+        producer_revision=REVISION,
+        backend_id="test-lora-pytorch",
+        adaptation_mode="lora",
+        target_updates=2,
+        completed_updates=2,
+        execution_mode="interrupted_resumed",
+        identity_artifacts=identity_artifacts,
+        interruption_receipt=interruption,
+        checkpoint_completed_updates=1,
+        resumed_from_completed_updates=1,
+        interruption_signal="SIGTERM",
+    )
+    (root / "uninterrupted-receipt.json").write_text(json.dumps(uninterrupted), encoding="utf-8")
+    (root / "resumed-receipt.json").write_text(json.dumps(resumed), encoding="utf-8")
+    plan["schema_version"] = "1.1.0"
+    plan["conditioning_artifacts"] = [
+        {"role": role, "kind": kind, "path": str(path.relative_to(root))}
+        for role, (path, kind) in sorted(identity_artifacts.items())
+    ]
+    return plan, plan_path
+
+
 class ResumeComparisonTests(unittest.TestCase):
     def test_cli_builds_byte_exact_report(self) -> None:
         with TemporaryDirectory() as temporary:
@@ -128,6 +184,188 @@ class ResumeComparisonTests(unittest.TestCase):
             with self.subTest(filename=filename):
                 schema = json.loads((ROOT / "reference" / filename).read_text(encoding="utf-8"))
                 self.assertEqual(schema["$schema"], "https://json-schema.org/draft/2020-12/schema")
+
+    def test_builds_and_compares_live_conditioned_receipts(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan, plan_path = build_live_conditioning_fixture(root)
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            output = root / "report.json"
+            self.assertEqual(
+                main(["compare-resume-artifacts", str(plan_path), "--output", str(output)]),
+                0,
+            )
+            report = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(report["conditioning_artifacts_verified"])
+            self.assertEqual(report["plan_schema_version"], "1.1.0")
+            self.assertEqual(report["claim_tier"], "byte_exact_live_conditioned_artifact_set")
+            self.assertEqual(len(report["conditioning_artifacts"]), 4)
+
+    def test_cli_builds_live_conditioned_receipt(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            conditioning = root / "conditioning"
+            conditioning.mkdir()
+            for role in ("base_artifact", "dataset_lineage", "training_controls", "initial_state"):
+                (conditioning / f"{role}.bin").write_bytes(f"{role}\n".encode())
+            output = root / "receipt.json"
+            arguments = [
+                "build-resume-run-receipt",
+                "--run-id",
+                "run-uninterrupted",
+                "--producer-repository",
+                "instavar/test-tts",
+                "--producer-revision",
+                REVISION,
+                "--backend-id",
+                "test-lora-pytorch",
+                "--adaptation-mode",
+                "lora",
+                "--target-updates",
+                "2",
+                "--completed-updates",
+                "2",
+                "--execution-mode",
+                "uninterrupted",
+            ]
+            for role in ("base_artifact", "dataset_lineage", "training_controls", "initial_state"):
+                arguments.extend(
+                    ["--identity-artifact", f"{role}=file={conditioning / f'{role}.bin'}"]
+                )
+            arguments.extend(["--output", str(output)])
+            self.assertEqual(main(arguments), 0)
+            receipt_value = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(receipt_value["schema_version"], "1.1.0")
+            self.assertEqual(len(receipt_value["identity_artifacts"]), 4)
+            original_bytes = output.read_bytes()
+            self.assertEqual(main(arguments), 2)
+            self.assertEqual(output.read_bytes(), original_bytes)
+
+    def test_outputs_cannot_overwrite_or_mutate_evidence_inputs(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan, plan_path = build_live_conditioning_fixture(root)
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            output = root / "report.json"
+            self.assertEqual(
+                main(["compare-resume-artifacts", str(plan_path), "--output", str(output)]),
+                0,
+            )
+            original_bytes = output.read_bytes()
+            self.assertEqual(
+                main(["compare-resume-artifacts", str(plan_path), "--output", str(output)]),
+                2,
+            )
+            self.assertEqual(output.read_bytes(), original_bytes)
+
+            with self.assertRaisesRegex(ValueError, "must not overwrite or be created inside"):
+                compare_resume_artifacts(
+                    plan,
+                    base_dir=root,
+                    output_path=root / "conditioning/base/report.json",
+                )
+
+            identity = {
+                row["role"]: (root / row["path"], row["kind"])
+                for row in plan["conditioning_artifacts"]
+            }
+            with self.assertRaisesRegex(ValueError, "must not overwrite or be created inside"):
+                build_resume_run_receipt(
+                    run_id="run-new",
+                    producer_repository="instavar/test-tts",
+                    producer_revision=REVISION,
+                    backend_id="test-lora-pytorch",
+                    adaptation_mode="lora",
+                    target_updates=2,
+                    completed_updates=2,
+                    execution_mode="uninterrupted",
+                    identity_artifacts=identity,
+                    output_path=root / "conditioning/base/run-receipt.json",
+                )
+
+    def test_live_conditioning_mutation_and_legacy_receipts_are_rejected(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan, _ = build_live_conditioning_fixture(root)
+            (root / "conditioning/training-controls.json").write_bytes(b"changed controls\n")
+            with self.assertRaisesRegex(ValueError, "do not match live conditioning"):
+                compare_resume_artifacts(plan, base_dir=root)
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan, _ = build_fixture(root)
+            conditioning = root / "conditioning"
+            conditioning.mkdir()
+            for role in ("base_artifact", "dataset_lineage", "training_controls", "initial_state"):
+                (conditioning / f"{role}.bin").write_bytes(f"{role}\n".encode())
+            plan["schema_version"] = "1.1.0"
+            plan["conditioning_artifacts"] = [
+                {"role": role, "kind": "file", "path": f"conditioning/{role}.bin"}
+                for role in ("base_artifact", "dataset_lineage", "training_controls", "initial_state")
+            ]
+            with self.assertRaisesRegex(ValueError, "receipt must use schema_version 1.1.0"):
+                compare_resume_artifacts(plan, base_dir=root)
+
+    def test_receipt_builder_rejects_alias_and_mutation(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shared = root / "shared.bin"
+            shared.write_bytes(b"shared\n")
+            identity = {
+                "base_artifact": (shared, "file"),
+                "dataset_lineage": (shared, "file"),
+                "training_controls": (root / "controls.bin", "file"),
+                "initial_state": (root / "initial.bin", "file"),
+            }
+            (root / "controls.bin").write_bytes(b"controls\n")
+            (root / "initial.bin").write_bytes(b"initial\n")
+            with self.assertRaisesRegex(ValueError, "must not share files or hardlinks"):
+                build_resume_run_receipt(
+                    run_id="run-uninterrupted",
+                    producer_repository="instavar/test-tts",
+                    producer_revision=REVISION,
+                    backend_id="test-lora-pytorch",
+                    adaptation_mode="lora",
+                    target_updates=2,
+                    completed_updates=2,
+                    execution_mode="uninterrupted",
+                    identity_artifacts=identity,
+                )
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            identity = {}
+            for role in ("base_artifact", "dataset_lineage", "training_controls", "initial_state"):
+                path = root / f"{role}.bin"
+                path.write_bytes(f"{role}\n".encode())
+                identity[role] = (path, "file")
+            target = root / "training_controls.bin"
+            from instavar_voice_lab import resume as resume_module
+
+            original = resume_module.fingerprint_artifact
+            mutated = False
+
+            def mutate_after_first_hash(path: Path, *, role: str, kind: str):
+                nonlocal mutated
+                result = original(path, role=role, kind=kind)
+                if Path(path) == target and role == "training_controls" and not mutated:
+                    target.write_bytes(b"mutated controls\n")
+                    mutated = True
+                return result
+
+            with patch("instavar_voice_lab.resume.fingerprint_artifact", side_effect=mutate_after_first_hash):
+                with self.assertRaisesRegex(ValueError, "identity artifact mutated"):
+                    build_resume_run_receipt(
+                        run_id="run-uninterrupted",
+                        producer_repository="instavar/test-tts",
+                        producer_revision=REVISION,
+                        backend_id="test-lora-pytorch",
+                        adaptation_mode="lora",
+                        target_updates=2,
+                        completed_updates=2,
+                        execution_mode="uninterrupted",
+                        identity_artifacts=identity,
+                    )
 
     def test_artifact_mismatch_is_retained_as_negative_result(self) -> None:
         with TemporaryDirectory() as temporary:

@@ -6,10 +6,13 @@
   "additionalProperties": false,
   "required": [
     "schema_version",
+    "plan_schema_version",
     "comparison_id",
     "status",
     "claim_tier",
     "conditioning",
+    "conditioning_artifacts_verified",
+    "conditioning_artifacts",
     "runs",
     "interruption",
     "independent_artifact_storage_verified",
@@ -25,11 +28,22 @@
     "report_sha256"
   ],
   "properties": {
-    "schema_version": { "const": "1.0.0" },
+    "schema_version": { "const": "1.1.0" },
+    "plan_schema_version": { "enum": ["1.0.0", "1.1.0"] },
     "comparison_id": { "$ref": "#/$defs/identifier" },
     "status": { "enum": ["passed", "negative_result"] },
     "claim_tier": {
-      "enum": ["byte_exact_declared_artifact_set", "artifact_mismatch"]
+      "enum": [
+        "byte_exact_declared_artifact_set",
+        "byte_exact_live_conditioned_artifact_set",
+        "artifact_mismatch"
+      ]
+    },
+    "conditioning_artifacts_verified": { "type": "boolean" },
+    "conditioning_artifacts": {
+      "type": "array",
+      "maxItems": 4,
+      "items": { "$ref": "#/$defs/conditioningArtifact" }
     },
     "conditioning": {
       "type": "object",
@@ -117,6 +131,26 @@
     "evidence_boundary": { "type": "string", "minLength": 1 },
     "report_sha256": { "$ref": "#/$defs/sha256" }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "plan_schema_version": { "const": "1.1.0" } },
+        "required": ["plan_schema_version"]
+      },
+      "then": {
+        "properties": {
+          "conditioning_artifacts_verified": { "const": true },
+          "conditioning_artifacts": { "minItems": 4, "maxItems": 4 }
+        }
+      },
+      "else": {
+        "properties": {
+          "conditioning_artifacts_verified": { "const": false },
+          "conditioning_artifacts": { "maxItems": 0 }
+        }
+      }
+    }
+  ],
   "$defs": {
     "identifier": {
       "type": "string",
@@ -157,6 +191,27 @@
         "uninterrupted_bytes": { "type": "integer", "minimum": 1 },
         "resumed_bytes": { "type": "integer", "minimum": 1 }
       }
+    },
+    "conditioningArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "kind", "sha256", "bytes"],
+      "properties": {
+        "role": {
+          "enum": ["base_artifact", "dataset_lineage", "training_controls", "initial_state"]
+        },
+        "kind": { "enum": ["file", "tree"] },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "file_count": { "type": "integer", "minimum": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "tree" } }, "required": ["kind"] },
+          "then": { "required": ["file_count"] },
+          "else": { "not": { "required": ["file_count"] } }
+        }
+      ]
     }
   }
 }

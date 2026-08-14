@@ -13,7 +13,7 @@
     "resumed"
   ],
   "properties": {
-    "schema_version": { "const": "1.0.0" },
+    "schema_version": { "enum": ["1.0.0", "1.1.0"] },
     "comparison_id": { "$ref": "#/$defs/identifier" },
     "required_artifact_roles": {
       "type": "array",
@@ -29,9 +29,31 @@
       "items": { "$ref": "#/$defs/identifier" }
     },
     "interruption_receipt": { "$ref": "#/$defs/path" },
+    "conditioning_artifacts": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "allOf": [
+        { "contains": { "properties": { "role": { "const": "base_artifact" } }, "required": ["role"] } },
+        { "contains": { "properties": { "role": { "const": "dataset_lineage" } }, "required": ["role"] } },
+        { "contains": { "properties": { "role": { "const": "training_controls" } }, "required": ["role"] } },
+        { "contains": { "properties": { "role": { "const": "initial_state" } }, "required": ["role"] } }
+      ],
+      "items": { "$ref": "#/$defs/artifact" }
+    },
     "uninterrupted": { "$ref": "#/$defs/run" },
     "resumed": { "$ref": "#/$defs/run" }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "schema_version": { "const": "1.1.0" } },
+        "required": ["schema_version"]
+      },
+      "then": { "required": ["conditioning_artifacts"] },
+      "else": { "not": { "required": ["conditioning_artifacts"] } }
+    }
+  ],
   "$defs": {
     "identifier": {
       "type": "string",

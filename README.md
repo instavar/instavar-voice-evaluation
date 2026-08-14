@@ -369,19 +369,39 @@ contract.
 
 ## Compare interrupted and resumed training artifacts
 
-Version 0.44 adds a fail-closed comparison for one uninterrupted control run
-and one independently interrupted and resumed run. Each run receipt binds the
-same repository revision, backend, adaptation mode, Base artifact, dataset
-lineage, training controls, initial state, and target update count. The resumed
-receipt must also bind a live interruption receipt and a checkpoint boundary
-strictly before the target update.
+Version 0.45 adds a fail-closed comparison for one uninterrupted control run
+and one independently interrupted and resumed run. Build each schema 1.1 run
+receipt directly from the live Base artifact, dataset-lineage receipt, training
+controls, and initial state instead of hand-authoring their hashes:
+
+```bash
+instavar-voice-eval build-resume-run-receipt \
+  --run-id f5-uninterrupted \
+  --producer-repository instavar/f5-tts-lora-finetuning \
+  --producer-revision "$COMPANION_REVISION" \
+  --backend-id f5-lora-pytorch \
+  --adaptation-mode lora \
+  --target-updates 2 \
+  --completed-updates 2 \
+  --execution-mode uninterrupted \
+  --identity-artifact base_artifact=tree=/models/f5-base \
+  --identity-artifact dataset_lineage=file=dataset-lineage.json \
+  --identity-artifact training_controls=file=training-controls.json \
+  --identity-artifact initial_state=file=initial-state.pt \
+  --output uninterrupted/run-receipt.json
+```
+
+For the resumed receipt, use `--execution-mode interrupted_resumed` and also
+provide `--interruption-receipt`, `--checkpoint-completed-updates`,
+`--resumed-from-completed-updates`, and `--interruption-signal`. The builder
+rejects identity-artifact aliases and mutation while hashing.
 
 Create a local plan that points to the two receipts and to independently stored
 final state files or trees:
 
 ```json
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "comparison_id": "f5-lora-two-update-resume",
   "required_artifact_roles": [
     "model_state",
@@ -389,6 +409,12 @@ final state files or trees:
     "scheduler_state",
     "trainer_state",
     "rng_state"
+  ],
+  "conditioning_artifacts": [
+    { "role": "base_artifact", "kind": "tree", "path": "/models/f5-base" },
+    { "role": "dataset_lineage", "kind": "file", "path": "dataset-lineage.json" },
+    { "role": "training_controls", "kind": "file", "path": "training-controls.json" },
+    { "role": "initial_state", "kind": "file", "path": "initial-state.pt" }
   ],
   "interruption_receipt": "resumed/interruption-receipt.json",
   "uninterrupted": {
@@ -421,16 +447,27 @@ instavar-voice-eval compare-resume-artifacts resume-plan.json \
   --output resume-artifact-comparison.json
 ```
 
+Schema 1.1 rehashes the four conditioning artifacts and requires both receipts
+to contain the same generated fingerprints. Schema 1.0 remains accepted for
+legacy declared receipts, but its report sets
+`conditioning_artifacts_verified: false` and uses the weaker
+`byte_exact_declared_artifact_set` claim tier.
+
 The command rejects missing core state, conditioning drift, incomplete runs,
 unobserved or post-target interruptions, asymmetric roles, symlinks, shared
 paths, hardlinks, control-file aliases, and mutation during comparison. A
 content mismatch is retained as a `negative_result` report with exit status 1;
 an invalid comparison exits 2 without manufacturing a report.
 
+Receipt and comparison outputs use exclusive creation. An existing output is
+never overwritten, and an output cannot be placed inside a conditioning or
+compared artifact tree or on top of a receipt. This prevents evidence creation
+from mutating the evidence it just fingerprinted.
+
 A passing report establishes byte equality only for the named final state
 roles under the two declared receipts. It always sets
 `proves_numerical_resume_equivalence`, `proves_training_semantics`, and
-`proves_model_quality` to false. Version 0.44 requires decomposed model,
+`proves_model_quality` to false. Version 0.45 requires decomposed model,
 optimizer, scheduler, trainer, and RNG state. A monolithic checkpoint whose
 internal state inventory is not independently exposed remains outside this
 claim tier rather than being treated as complete by assertion.
@@ -440,6 +477,10 @@ Machine-readable contracts are in
 [`reference/resume-comparison-plan.schema.json`](reference/resume-comparison-plan.schema.json),
 and
 [`reference/resume-artifact-comparison.schema.json`](reference/resume-artifact-comparison.schema.json).
+Implementation and OOD validation are recorded in
+[`reports/resume-artifact-comparison-ood-validation-2026-08-14.md`](reports/resume-artifact-comparison-ood-validation-2026-08-14.md)
+and
+[`reports/resume-live-conditioning-ood-validation-2026-08-14.md`](reports/resume-live-conditioning-ood-validation-2026-08-14.md).
 
 ## Audit a training corpus
 

@@ -42,7 +42,7 @@ from .listening import (
 from .metrics import score_objective_observations
 from .observations import validate_objective_observations
 from .prosody_probe import compare_prosody_proxies, probe_prosody_proxy
-from .resume import compare_resume_artifacts
+from .resume import ADAPTATION_MODES, build_resume_run_receipt, compare_resume_artifacts
 from .runtime_artifacts import (
     build_runtime_artifact_manifest,
     validate_runtime_artifact_manifest,
@@ -61,6 +61,12 @@ def _read_json(path: Path):
 def _write_json(path: Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_new_json(path: Path, value) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as target:
+        target.write(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
 
 
 def _artifact_declarations(values: list[str]) -> dict[str, tuple[Path, str]]:
@@ -189,6 +195,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     compare_resume.add_argument("plan", type=Path)
     compare_resume.add_argument("--output", type=Path, required=True)
+
+    build_resume_receipt = commands.add_parser(
+        "build-resume-run-receipt",
+        help="fingerprint live conditioning into an uninterrupted or interrupted-resumed run receipt",
+    )
+    build_resume_receipt.add_argument("--run-id", required=True)
+    build_resume_receipt.add_argument("--producer-repository", required=True)
+    build_resume_receipt.add_argument("--producer-revision", required=True)
+    build_resume_receipt.add_argument("--backend-id", required=True)
+    build_resume_receipt.add_argument("--adaptation-mode", choices=sorted(ADAPTATION_MODES), required=True)
+    build_resume_receipt.add_argument("--target-updates", type=int, required=True)
+    build_resume_receipt.add_argument("--completed-updates", type=int, required=True)
+    build_resume_receipt.add_argument(
+        "--execution-mode",
+        choices=("uninterrupted", "interrupted_resumed"),
+        required=True,
+    )
+    build_resume_receipt.add_argument(
+        "--identity-artifact",
+        action="append",
+        required=True,
+        help="conditioning artifact declaration in the form ROLE=file|tree=PATH",
+    )
+    build_resume_receipt.add_argument("--interruption-receipt", type=Path)
+    build_resume_receipt.add_argument("--checkpoint-completed-updates", type=int)
+    build_resume_receipt.add_argument("--resumed-from-completed-updates", type=int)
+    build_resume_receipt.add_argument("--interruption-signal")
+    build_resume_receipt.add_argument("--output", type=Path, required=True)
 
     probe = commands.add_parser("probe-audio", help="record deterministic diagnostics for a PCM WAV file")
     probe.add_argument("wav", type=Path)
@@ -707,12 +741,36 @@ def main(argv: list[str] | None = None) -> int:
             result = compare_resume_artifacts(
                 _read_json(args.plan),
                 base_dir=args.plan.parent.resolve(),
+                output_path=args.output,
             )
+            _write_new_json(args.output, result)
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
             print(error, file=sys.stderr)
             return 2
-        _write_json(args.output, result)
         return 0 if result["status"] == "passed" else 1
+    if args.command == "build-resume-run-receipt":
+        try:
+            result = build_resume_run_receipt(
+                run_id=args.run_id,
+                producer_repository=args.producer_repository,
+                producer_revision=args.producer_revision,
+                backend_id=args.backend_id,
+                adaptation_mode=args.adaptation_mode,
+                target_updates=args.target_updates,
+                completed_updates=args.completed_updates,
+                execution_mode=args.execution_mode,
+                identity_artifacts=_artifact_declarations(args.identity_artifact),
+                interruption_receipt=args.interruption_receipt,
+                checkpoint_completed_updates=args.checkpoint_completed_updates,
+                resumed_from_completed_updates=args.resumed_from_completed_updates,
+                interruption_signal=args.interruption_signal,
+                output_path=args.output,
+            )
+            _write_new_json(args.output, result)
+        except (OSError, UnicodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 2
+        return 0
     if args.command == "probe-audio":
         try:
             result = probe_wav(args.wav)

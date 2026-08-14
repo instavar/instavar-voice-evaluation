@@ -20,7 +20,7 @@
     "execution_mode"
   ],
   "properties": {
-    "schema_version": { "const": "1.0.0" },
+    "schema_version": { "enum": ["1.0.0", "1.1.0"] },
     "run_id": { "$ref": "#/$defs/identifier" },
     "producer_repository": { "type": "string", "minLength": 1 },
     "producer_revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
@@ -32,6 +32,18 @@
     "dataset_lineage_sha256": { "$ref": "#/$defs/sha256" },
     "training_controls_sha256": { "$ref": "#/$defs/sha256" },
     "initial_state_sha256": { "$ref": "#/$defs/sha256" },
+    "identity_artifacts": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "allOf": [
+        { "contains": { "properties": { "role": { "const": "base_artifact" } }, "required": ["role"] } },
+        { "contains": { "properties": { "role": { "const": "dataset_lineage" } }, "required": ["role"] } },
+        { "contains": { "properties": { "role": { "const": "training_controls" } }, "required": ["role"] } },
+        { "contains": { "properties": { "role": { "const": "initial_state" } }, "required": ["role"] } }
+      ],
+      "items": { "$ref": "#/$defs/artifact" }
+    },
     "target_updates": { "type": "integer", "minimum": 1 },
     "completed_updates": { "type": "integer", "minimum": 1 },
     "execution_mode": { "enum": ["uninterrupted", "interrupted_resumed"] },
@@ -62,6 +74,14 @@
       },
       "then": { "required": ["resume"] },
       "else": { "not": { "required": ["resume"] } }
+    },
+    {
+      "if": {
+        "properties": { "schema_version": { "const": "1.1.0" } },
+        "required": ["schema_version"]
+      },
+      "then": { "required": ["identity_artifacts"] },
+      "else": { "not": { "required": ["identity_artifacts"] } }
     }
   ],
   "$defs": {
@@ -72,6 +92,27 @@
     "sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "kind", "sha256", "bytes"],
+      "properties": {
+        "role": {
+          "enum": ["base_artifact", "dataset_lineage", "training_controls", "initial_state"]
+        },
+        "kind": { "enum": ["file", "tree"] },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "file_count": { "type": "integer", "minimum": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "tree" } }, "required": ["kind"] },
+          "then": { "required": ["file_count"] },
+          "else": { "not": { "required": ["file_count"] } }
+        }
+      ]
     }
   }
 }
