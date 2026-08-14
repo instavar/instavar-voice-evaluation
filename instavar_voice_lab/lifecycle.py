@@ -565,27 +565,26 @@ def run_lifecycle(spec_path: Path, experiment_path: Path, work_dir: Path) -> dic
         with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
             try:
                 _verify_control_inputs(control_inputs)
+                process = subprocess.Popen(
+                    command,
+                    cwd=spec_path.parent,
+                    env=environment,
+                    stdout=stdout,
+                    stderr=stderr,
+                    start_new_session=os.name == "posix",
+                )
                 try:
-                    process = subprocess.Popen(
-                        command,
-                        cwd=spec_path.parent,
-                        env=environment,
-                        stdout=stdout,
-                        stderr=stderr,
-                        start_new_session=os.name == "posix",
+                    return_code = process.wait(timeout=timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    termination = _terminate_stage_processes(process)
+                    return_code = process.returncode
+                if not timed_out and os.name == "posix" and _process_group_exists(process.pid):
+                    termination = _terminate_stage_processes(process)
+                    leaked_descendants = bool(
+                        termination["term_signal_sent"]
+                        or not termination["process_tree_termination_verified"]
                     )
-                    try:
-                        return_code = process.wait(timeout=timeout_seconds)
-                    except subprocess.TimeoutExpired:
-                        timed_out = True
-                        termination = _terminate_stage_processes(process)
-                        return_code = process.returncode
-                    if not timed_out and os.name == "posix" and _process_group_exists(process.pid):
-                        termination = _terminate_stage_processes(process)
-                        leaked_descendants = bool(
-                            termination["term_signal_sent"]
-                            or not termination["process_tree_termination_verified"]
-                        )
                 _verify_control_inputs(control_inputs)
             except (OSError, ValueError) as error:
                 control_input_error = str(error)
