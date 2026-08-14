@@ -26,6 +26,7 @@ The shared layer provides:
 - an optional first-party SpeechBrain ECAPA execution path with CPU and CUDA routing, runtime provenance, and a content-addressed execution receipt;
 - an optional first-party faster-whisper execution path with offline model loading, frozen decoding, and content-addressed ASR receipts;
 - a plan-bound content-faithfulness report that keeps requested-text error, repeated n-gram excess, retained-reference transcript overlap, and spoken conditioning-instruction overlap separate;
+- optional bounded PCM similarity review for cross-split re-encoding, level, silence-padding, and resampling candidates;
 - content-addressed generation-attempt receipts for runtime timing, duration, and memory evidence;
 - exact-versus-derived cross-runtime artifact manifests with live content rechecks;
 - lifecycle-stage and matched-comparison declarations for every supported adaptation path;
@@ -512,10 +513,65 @@ during the audit, malformed UTF-8, manifests above 512 MiB, and logical JSONL
 lines above 8 MiB. The Python API can tighten those two limits but cannot raise
 them above the defaults. The CLI intentionally exposes no relaxation flags.
 
+Version 0.46 adds an opt-in PCM similarity review:
+
+```bash
+instavar-voice-eval audit-corpus \
+  --split train=data/train.jsonl \
+  --split validation=data/validation.jsonl \
+  --split test=data/test.jsonl \
+  --group-field recording_id \
+  --check-pcm-near-duplicates \
+  --output evaluation/corpus-audit.json
+```
+
+The audit streams uncompressed PCM WAV samples into a duration-normalized
+energy and per-channel zero-crossing envelope at a fixed analysis cadence no
+higher than 2 kHz. It trims low-activity boundaries, normalizes level, and
+compares only cross-split rows with similar active duration that share at least
+three coarse envelope bands. The result can surface review candidates after
+level changes, silence padding, or sample-rate
+changes without loading whole audio payloads into memory. The exact content
+hash still reads every byte. PCM work is capped at 512 MiB per file, candidate
+output at 1,000 pairs, and detailed pair comparison at 100,000 pairs.
+Unsupported formats and low-activity files are counted as skipped rather than
+silently treated as clean.
+
+This check emits warnings and
+`classification: review_required_not_proven_duplicate`. It never turns an
+approximate envelope match into a leakage failure and always reports
+`proves_duplicate_audio: false`. Similar rhythm and energy can collide, while
+codec loss, trimming, noise, time stretching, pitch changes, or different
+content can evade the fingerprint. Confirm candidates with audio inspection,
+stronger acoustic matching, provenance, and group metadata. Exact path, byte,
+and group leakage remain the fail-closed checks. A reached candidate or pair
+comparison ceiling means the advisory scan is incomplete, even when the exact
+audit passed.
+
+When stable source identity is encoded only in filenames, the same release can
+derive one group ID with a caller-supplied regular expression:
+
+```bash
+instavar-voice-eval audit-corpus \
+  --split train=data/train.jsonl \
+  --split validation=data/validation.jsonl \
+  --split test=data/test.jsonl \
+  --audio-path-group-regex '^(?:(?:vocal|instrument)_)?([0-9]{4})\.wav' \
+  --output evaluation/corpus-group-audit.json
+```
+
+The pattern must contain exactly one capture group and is mutually exclusive
+with `--group-field`. A repeated derived group across splits is a fail-closed
+error. The regex is dataset-specific operator input, not an inferred universal
+filename convention. Preserve the exact pattern in the audit artifact and
+review it against every source naming family before relying on a pass.
+
 Implementation and OOD validation are recorded in
 [`reports/corpus-content-leakage-ood-validation-2026-08-13.md`](reports/corpus-content-leakage-ood-validation-2026-08-13.md).
 Manifest streaming and mutation validation are recorded in
 [`reports/corpus-manifest-streaming-ood-validation-2026-08-13.md`](reports/corpus-manifest-streaming-ood-validation-2026-08-13.md).
+PCM similarity OOD validation is recorded in
+[`reports/corpus-pcm-similarity-ood-validation-2026-08-14.md`](reports/corpus-pcm-similarity-ood-validation-2026-08-14.md).
 
 Bind audited raw splits to model-ready artifacts with a content-addressed lineage receipt:
 
