@@ -84,7 +84,8 @@ candidates from omitting the same difficult metric and producing a superficially
 complete empty or timing-only comparison. Legacy plan 1.0 remains readable, but
 its report states that required metric coverage was not enforced.
 
-Prompt-pack version 1.2 can freeze optional lexical anchors on selected prompts.
+Prompt-pack version 1.3 freezes four optional lexical anchors on selected
+prompts: `paiseh`, `Tanjong Pagar`, `Sze Min`, and `Jalan Membina`.
 Each anchor declares a token-bound surface present in the requested text and a
 set of accepted ASR forms chosen before generation. The generation plan carries
 the exact anchor set across candidates and seeds. Empty forms, normalized

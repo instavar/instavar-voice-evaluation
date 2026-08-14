@@ -1,6 +1,6 @@
 {
   "id": "instavar-singapore-english",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "locale": "en-SG",
   "purpose": "Compare identity, Singapore English accent, pronunciation, cadence, long-form stability, and runtime behavior without treating conspicuous Singlish vocabulary as an accent proxy.",
   "reference_durations_seconds": [10, 30, 75],
@@ -24,6 +24,11 @@
           "anchor_id": "paiseh",
           "surface": "paiseh",
           "accepted_asr_forms": ["paiseh", "pai seh", "pie say"]
+        },
+        {
+          "anchor_id": "tanjong-pagar",
+          "surface": "Tanjong Pagar",
+          "accepted_asr_forms": ["Tanjong Pagar", "Tanjung Pagar"]
         }
       ],
       "text": "I thought the meeting was at the office, but Marcus said everyone was already heading to Tanjong Pagar. I felt a bit paiseh, so I sent a message and took the next train."
@@ -31,6 +36,18 @@
     {
       "id": "names-numbers",
       "category": "pronunciation",
+      "lexical_anchors": [
+        {
+          "anchor_id": "sze-min",
+          "surface": "Sze Min",
+          "accepted_asr_forms": ["Sze Min"]
+        },
+        {
+          "anchor_id": "jalan-membina",
+          "surface": "Jalan Membina",
+          "accepted_asr_forms": ["Jalan Membina"]
+        }
+      ],
       "text": "Please send the revised quotation to Sze Min at Block 18, Jalan Membina, by 4:30 p.m. on 12 August. The total is S$1,248.60, including GST."
     },
     {
