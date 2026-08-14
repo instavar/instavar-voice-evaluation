@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -9,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from instavar_voice_lab.lifecycle import (
+    _terminate_stage_processes,
     resolve_backend_spec,
     run_lifecycle,
     run_registered_lifecycle,
@@ -38,6 +40,33 @@ def write_registry_fixture(directory: Path, entries: list[dict[str, str]]) -> Pa
 
 
 class LifecycleTests(unittest.TestCase):
+    def test_non_posix_timeout_fallback_does_not_claim_process_tree_cleanup(self) -> None:
+        class ResistantProcess:
+            terminated = False
+            killed = False
+            wait_count = 0
+
+            def terminate(self) -> None:
+                self.terminated = True
+
+            def wait(self, timeout: float | None = None) -> int:
+                self.wait_count += 1
+                if self.wait_count == 1:
+                    raise subprocess.TimeoutExpired(cmd=["fake"], timeout=timeout)
+                return -9
+
+            def kill(self) -> None:
+                self.killed = True
+
+        process = ResistantProcess()
+        with patch("instavar_voice_lab.lifecycle.os.name", "nt"):
+            result = _terminate_stage_processes(process, grace_seconds=0.01)  # type: ignore[arg-type]
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.killed)
+        self.assertEqual(result["mode"], "direct_process_only")
+        self.assertTrue(result["kill_signal_sent"])
+        self.assertFalse(result["process_tree_termination_verified"])
+
     def test_fake_backend_runs_every_stage_and_hashes_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             result = run_lifecycle(
@@ -223,6 +252,160 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(result["status"], "failed")
             self.assertIn("timeout", result["stages"][0]["error"])
 
+    @unittest.skipUnless(os.name == "posix", "process-group cleanup requires POSIX")
+    def test_stage_timeout_terminates_descendant_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ready = root / "child-ready"
+            terminated = root / "child-terminated"
+            child_code = """
+import signal
+import sys
+import time
+from pathlib import Path
+
+ready = Path(sys.argv[1])
+terminated = Path(sys.argv[2])
+
+def stop(*_args):
+    terminated.write_text("terminated", encoding="utf-8")
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, stop)
+ready.write_text("ready", encoding="utf-8")
+while True:
+    time.sleep(1)
+"""
+            parent_code = """
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+subprocess.Popen([sys.executable, "-c", sys.argv[1], sys.argv[2], sys.argv[3]])
+ready = Path(sys.argv[2])
+deadline = time.monotonic() + 10
+while not ready.exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+time.sleep(60)
+"""
+            spec = json.loads((ROOT / "examples" / "fake-backend.json").read_text())
+            spec["commands"]["preflight"] = [
+                sys.executable,
+                "-c",
+                parent_code,
+                child_code,
+                str(ready),
+                str(terminated),
+            ]
+            spec["timeout_seconds"]["preflight"] = 1
+            spec_path = write_backend_fixture(root, "descendant-timeout-backend.json", spec)
+            with patch("instavar_voice_lab.lifecycle.PROCESS_TERMINATION_GRACE_SECONDS", 0.5):
+                result = run_lifecycle(spec_path, ROOT / "examples" / "experiment-manifest.json", root / "work")
+            stage = result["stages"][0]
+            self.assertEqual(stage["error"], "backend command exceeded its stage timeout")
+            self.assertEqual(stage["process_termination"]["mode"], "posix_process_group")
+            self.assertTrue(stage["process_termination"]["term_signal_sent"])
+            self.assertTrue(terminated.is_file())
+
+    @unittest.skipUnless(os.name == "posix", "process-group cleanup requires POSIX")
+    def test_successful_parent_cannot_leave_background_descendant(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ready = root / "child-ready"
+            terminated = root / "child-terminated"
+            child_code = """
+import signal
+import sys
+import time
+from pathlib import Path
+
+ready = Path(sys.argv[1])
+terminated = Path(sys.argv[2])
+
+def stop(*_args):
+    terminated.write_text("terminated", encoding="utf-8")
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, stop)
+ready.write_text("ready", encoding="utf-8")
+while True:
+    time.sleep(1)
+"""
+            parent_code = """
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+subprocess.Popen([sys.executable, "-c", sys.argv[1], sys.argv[2], sys.argv[3]])
+ready = Path(sys.argv[2])
+deadline = time.monotonic() + 10
+while not ready.exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+"""
+            spec = json.loads((ROOT / "examples" / "fake-backend.json").read_text())
+            spec["commands"]["preflight"] = [
+                sys.executable,
+                "-c",
+                parent_code,
+                child_code,
+                str(ready),
+                str(terminated),
+            ]
+            spec_path = write_backend_fixture(root, "descendant-exit-backend.json", spec)
+            with patch("instavar_voice_lab.lifecycle.PROCESS_TERMINATION_GRACE_SECONDS", 0.5):
+                result = run_lifecycle(spec_path, ROOT / "examples" / "experiment-manifest.json", root / "work")
+            stage = result["stages"][0]
+            self.assertEqual(stage["error"], "backend command left descendant processes running")
+            self.assertTrue(stage["process_termination"]["term_signal_sent"])
+            self.assertTrue(terminated.is_file())
+
+    @unittest.skipUnless(os.name == "posix", "process-group cleanup requires POSIX")
+    def test_stage_timeout_escalates_when_descendant_ignores_sigterm(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ready = root / "child-ready"
+            child_code = """
+import signal
+import sys
+import time
+from pathlib import Path
+
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+Path(sys.argv[1]).write_text("ready", encoding="utf-8")
+while True:
+    time.sleep(1)
+"""
+            parent_code = """
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+subprocess.Popen([sys.executable, "-c", sys.argv[1], sys.argv[2]])
+ready = Path(sys.argv[2])
+deadline = time.monotonic() + 10
+while not ready.exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+time.sleep(60)
+"""
+            spec = json.loads((ROOT / "examples" / "fake-backend.json").read_text())
+            spec["commands"]["preflight"] = [
+                sys.executable,
+                "-c",
+                parent_code,
+                child_code,
+                str(ready),
+            ]
+            spec["timeout_seconds"]["preflight"] = 1
+            spec_path = write_backend_fixture(root, "sigterm-resistant-backend.json", spec)
+            with patch("instavar_voice_lab.lifecycle.PROCESS_TERMINATION_GRACE_SECONDS", 0.1):
+                result = run_lifecycle(spec_path, ROOT / "examples" / "experiment-manifest.json", root / "work")
+            stage = result["stages"][0]
+            self.assertEqual(stage["error"], "backend command exceeded its stage timeout")
+            self.assertTrue(stage["process_termination"]["kill_signal_sent"])
+
     def test_backend_registry_validates_and_runs_unique_adaptation(self) -> None:
         self.assertEqual(
             validate_backend_registry(
@@ -379,16 +562,19 @@ class LifecycleTests(unittest.TestCase):
                     "capability_manifest": fixture_dir / "capability-manifest.json",
                 }
 
-                def mutate_control_input(
-                    *_args: object,
-                    target: Path = targets[role],
-                    **_kwargs: object,
-                ) -> subprocess.CompletedProcess[str]:
-                    target.write_text(target.read_text() + "\n", encoding="utf-8")
-                    return subprocess.CompletedProcess(args=[], returncode=0)
+                class MutatingProcess:
+                    pid = 2_147_483_647
+                    returncode = 0
+
+                    def wait(self, *_args: object, target: Path = targets[role], **_kwargs: object) -> int:
+                        target.write_text(target.read_text() + "\n", encoding="utf-8")
+                        return 0
+
+                    def poll(self) -> int:
+                        return 0
 
                 work_dir = fixture_dir / "work"
-                with patch("instavar_voice_lab.lifecycle.subprocess.run", side_effect=mutate_control_input):
+                with patch("instavar_voice_lab.lifecycle.subprocess.Popen", return_value=MutatingProcess()):
                     result = run_lifecycle(spec_path, experiment_path, work_dir)
                 self.assertEqual(result["status"], "failed")
                 self.assertIn(f"after locking: {role}", result["stages"][0]["error"])

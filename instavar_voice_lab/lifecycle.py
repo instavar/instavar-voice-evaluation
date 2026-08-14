@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,7 @@ RESERVED_ENV_NAMES = {
     "INSTAVAR_VOICE_STAGE_RESULT",
     "INSTAVAR_VOICE_WORK_DIR",
 }
+PROCESS_TERMINATION_GRACE_SECONDS = 5.0
 
 
 def _now() -> str:
@@ -110,6 +113,82 @@ def _verify_control_inputs(inputs: list[tuple[Path, dict[str, Any]]]) -> None:
         current = _control_input_record(path, role=expected["role"], display_path=expected["path"])
         if current != expected:
             raise ValueError(f"lifecycle control input changed after locking: {expected['role']}")
+
+
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _signal_process_group(process_group_id: int, requested_signal: int) -> bool:
+    try:
+        os.killpg(process_group_id, requested_signal)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _terminate_stage_processes(
+    process: subprocess.Popen[Any],
+    *,
+    grace_seconds: float | None = None,
+) -> dict[str, Any]:
+    if grace_seconds is None:
+        grace_seconds = PROCESS_TERMINATION_GRACE_SECONDS
+    if os.name != "posix":
+        process.terminate()
+        try:
+            process.wait(timeout=grace_seconds)
+            forced = False
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            forced = True
+        return {
+            "mode": "direct_process_only",
+            "term_signal_sent": True,
+            "kill_signal_sent": forced,
+            "process_tree_termination_verified": False,
+        }
+
+    process_group_id = process.pid
+    if process_group_id <= 1 or process_group_id == os.getpgrp():
+        raise RuntimeError("refusing to signal an unsafe lifecycle process group")
+    term_signal_sent = False
+    kill_signal_sent = False
+    if _process_group_exists(process_group_id):
+        term_signal_sent = _signal_process_group(process_group_id, signal.SIGTERM)
+    deadline = time.monotonic() + grace_seconds
+    if process.poll() is None:
+        try:
+            process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            pass
+    while _process_group_exists(process_group_id) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if _process_group_exists(process_group_id):
+        kill_signal_sent = _signal_process_group(process_group_id, signal.SIGKILL)
+    if process.poll() is None:
+        try:
+            process.wait(timeout=grace_seconds)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            kill_signal_sent = True
+    verification_deadline = time.monotonic() + grace_seconds
+    while _process_group_exists(process_group_id) and time.monotonic() < verification_deadline:
+        time.sleep(0.05)
+    return {
+        "mode": "posix_process_group",
+        "term_signal_sent": term_signal_sent,
+        "kill_signal_sent": kill_signal_sent,
+        "process_tree_termination_verified": not _process_group_exists(process_group_id),
+    }
 
 
 def _validate_capability_binding(spec: dict[str, Any], spec_path: Path | None, errors: list[str]) -> None:
@@ -479,23 +558,34 @@ def run_lifecycle(spec_path: Path, experiment_path: Path, work_dir: Path) -> dic
         started = _now()
         timeout_seconds = spec.get("timeout_seconds", {}).get(stage, 3600)
         timed_out = False
-        completed: subprocess.CompletedProcess[str] | None = None
+        return_code: int | None = None
+        termination: dict[str, Any] | None = None
+        leaked_descendants = False
         control_input_error: str | None = None
         with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
             try:
                 _verify_control_inputs(control_inputs)
                 try:
-                    completed = subprocess.run(
+                    process = subprocess.Popen(
                         command,
                         cwd=spec_path.parent,
                         env=environment,
                         stdout=stdout,
                         stderr=stderr,
-                        check=False,
-                        timeout=timeout_seconds,
+                        start_new_session=os.name == "posix",
                     )
-                except subprocess.TimeoutExpired:
-                    timed_out = True
+                    try:
+                        return_code = process.wait(timeout=timeout_seconds)
+                    except subprocess.TimeoutExpired:
+                        timed_out = True
+                        termination = _terminate_stage_processes(process)
+                        return_code = process.returncode
+                    if not timed_out and os.name == "posix" and _process_group_exists(process.pid):
+                        termination = _terminate_stage_processes(process)
+                        leaked_descendants = bool(
+                            termination["term_signal_sent"]
+                            or not termination["process_tree_termination_verified"]
+                        )
                 _verify_control_inputs(control_inputs)
             except (OSError, ValueError) as error:
                 control_input_error = str(error)
@@ -504,20 +594,24 @@ def run_lifecycle(spec_path: Path, experiment_path: Path, work_dir: Path) -> dic
             "started_at": started,
             "finished_at": _now(),
             "command": command,
-            "exit_code": None if completed is None else completed.returncode,
+            "exit_code": return_code,
             "timeout_seconds": timeout_seconds,
             "stdout": str(stdout_path.relative_to(work_dir)),
             "stderr": str(stderr_path.relative_to(work_dir)),
             "status": "failed",
             "artifacts": [],
         }
+        if termination is not None:
+            report["process_termination"] = termination
         if control_input_error is not None:
             report["error"] = control_input_error
         elif timed_out:
             report["error"] = "backend command exceeded its stage timeout"
-        elif completed is None:
+        elif leaked_descendants:
+            report["error"] = "backend command left descendant processes running"
+        elif return_code is None:
             report["error"] = "backend command did not return a process result"
-        elif completed.returncode != 0:
+        elif return_code != 0:
             report["error"] = "backend command returned a non-zero exit code"
         elif not stage_result_path.is_file():
             report["error"] = "backend command did not write stage-result.json"

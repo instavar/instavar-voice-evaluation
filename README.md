@@ -1157,6 +1157,21 @@ proves
 orchestration and evidence generation only. It does not prove that a real model
 trains, synthesizes correct speech, or sounds good.
 
+On POSIX hosts, every stage runs in a new process session. A timeout sends
+`SIGTERM` to the complete process group, waits up to five seconds, and escalates
+to `SIGKILL` when any member remains. A stage also fails and cleans up when its
+direct command returns but leaves a background descendant running. The stage
+report records the cleanup mode, signals sent, and whether process-group exit
+was observed. This prevents a timed-out trainer subprocess from silently
+continuing to use GPU or write artifacts after the lifecycle has failed.
+
+Non-POSIX hosts retain direct-process termination and report
+`process_tree_termination_verified: false`; they are not evidence of descendant
+cleanup. Even a verified POSIX result is an observed process-group boundary,
+not proof against a privileged child that deliberately escapes its session.
+Implementation and OOD controls are recorded in
+[`reports/lifecycle-process-tree-ood-validation-2026-08-14.md`](reports/lifecycle-process-tree-ood-validation-2026-08-14.md).
+
 ## Test
 
 ```bash
