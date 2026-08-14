@@ -59,6 +59,9 @@ hosted Linux Quality run `31760972163`. The failed run remains part of the
 evidence because it exposed the missing post-edit syntax gate. The repository
 now runs `python -m compileall -q instavar_voice_lab tests` before test
 discovery so the same class of failure stops at a dedicated compile step.
+Public main `d2c92acb49cfe19202ec275703218dced66a20a5` passed hosted
+Linux Quality run `31761055757`, including that compile gate, all tests, and
+the frozen contract and matched-comparison commands.
 
 ## Scope and boundary
 
