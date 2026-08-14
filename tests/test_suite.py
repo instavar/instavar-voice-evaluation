@@ -14,7 +14,9 @@ class SuiteTests(unittest.TestCase):
         return json.loads((ROOT / "reference" / "singapore-english-v1.json").read_text(encoding="utf-8"))
 
     def test_prompt_pack_has_frozen_unique_seeds(self) -> None:
-        self.assertEqual(validate_prompt_pack(self.prompt_pack()), [])
+        prompt_pack = self.prompt_pack()
+        self.assertEqual(prompt_pack["version"], "1.3.0")
+        self.assertEqual(validate_prompt_pack(prompt_pack), [])
 
     def test_generation_plan_is_complete_and_deterministic(self) -> None:
         first = build_generation_plan(self.prompt_pack(), ["base", "adapter"])
@@ -28,10 +30,39 @@ class SuiteTests(unittest.TestCase):
         self.assertEqual(len({row["sample_id"] for row in first["samples"]}), 42)
         local_rows = [row for row in first["samples"] if row["prompt_id"] == "local-context"]
         self.assertEqual(len(local_rows), 6)
-        self.assertEqual(local_rows[0]["lexical_anchors"][0]["anchor_id"], "paiseh")
+        expected_local_anchors = [
+            {
+                "anchor_id": "paiseh",
+                "surface": "paiseh",
+                "accepted_asr_forms": ["paiseh", "pai seh", "pie say"],
+            },
+            {
+                "anchor_id": "tanjong-pagar",
+                "surface": "Tanjong Pagar",
+                "accepted_asr_forms": ["Tanjong Pagar", "Tanjung Pagar"],
+            },
+        ]
         self.assertEqual(
-            local_rows[0]["lexical_anchors"][0]["accepted_asr_forms"],
-            ["paiseh", "pai seh", "pie say"],
+            {json.dumps(row["lexical_anchors"], sort_keys=True) for row in local_rows},
+            {json.dumps(expected_local_anchors, sort_keys=True)},
+        )
+        pronunciation_rows = [row for row in first["samples"] if row["prompt_id"] == "names-numbers"]
+        self.assertEqual(len(pronunciation_rows), 6)
+        expected_pronunciation_anchors = [
+            {
+                "anchor_id": "sze-min",
+                "surface": "Sze Min",
+                "accepted_asr_forms": ["Sze Min"],
+            },
+            {
+                "anchor_id": "jalan-membina",
+                "surface": "Jalan Membina",
+                "accepted_asr_forms": ["Jalan Membina"],
+            },
+        ]
+        self.assertEqual(
+            {json.dumps(row["lexical_anchors"], sort_keys=True) for row in pronunciation_rows},
+            {json.dumps(expected_pronunciation_anchors, sort_keys=True)},
         )
 
     def test_generation_plan_can_preregister_a_focused_prompt_slice(self) -> None:
