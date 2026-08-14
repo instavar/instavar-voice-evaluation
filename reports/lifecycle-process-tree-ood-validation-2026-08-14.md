@@ -49,6 +49,17 @@ the local environment or hosted workflow, so no Ruff result is claimed. Python
 The default Python 3.14 environment could not import `setuptools.build_meta`;
 that host dependency failure is not recorded as a repository build failure.
 
+Initial implementation commit
+`7e74db8f876913ff231b74a091781da29e217a5d` failed hosted Quality run
+`31760890759` before test collection because a cleanup edit left an unmatched
+inner `try` block. Corrective commit
+`de2541a525d66d2b50003501a8030398fd60ee98` restored the intended block
+structure, passed local bytecode compilation and all 230 tests, and passed
+hosted Linux Quality run `31760972163`. The failed run remains part of the
+evidence because it exposed the missing post-edit syntax gate. The repository
+now runs `python -m compileall -q instavar_voice_lab tests` before test
+discovery so the same class of failure stops at a dedicated compile step.
+
 ## Scope and boundary
 
 The POSIX cleanup applies to every model-specific backend executed through the
