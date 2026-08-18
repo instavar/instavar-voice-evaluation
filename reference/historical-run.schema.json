@@ -21,7 +21,7 @@
     "repository": { "type": "string", "minLength": 1 },
     "model_family": { "type": "string", "minLength": 1 },
     "adaptation_mode": {
-      "enum": ["zero_shot", "lora", "full_sft", "partial_sft", "prompt_adapter"]
+      "enum": ["zero_shot", "lora", "full_sft", "partial_sft", "prompt_adapter", "provider_managed_fine_tune"]
     },
     "evidence_revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "observed_date": { "type": "string", "minLength": 1 },

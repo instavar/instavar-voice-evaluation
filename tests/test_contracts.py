@@ -66,6 +66,23 @@ class ContractTests(unittest.TestCase):
         errors = validate_document("capability", manifest)
         self.assertTrue(any("zero prompts and seeds" in error.message for error in errors))
 
+    def test_provider_managed_fine_tune_and_runtime_are_valid(self) -> None:
+        manifest = load_example("capability-manifest.json")
+        manifest["schema_version"] = "1.3.0"
+        capability = deepcopy(manifest["adaptation"]["lora"])
+        capability["evidence"][0]["claim"] = "A provider-managed fine-tune completed through a documented API."
+        manifest["adaptation"] = {"provider_managed_fine_tune": capability}
+        runtime = manifest["runtimes"][0]
+        runtime["artifact_mode"] = "provider_managed"
+        runtime["interface"] = "websocket"
+        self.assertEqual(validate_document("capability", manifest), [])
+
+    def test_unknown_hosted_adaptation_name_is_rejected(self) -> None:
+        manifest = load_example("capability-manifest.json")
+        manifest["adaptation"] = {"vendor_finetune": deepcopy(manifest["adaptation"]["lora"])}
+        errors = validate_document("capability", manifest)
+        self.assertTrue(any(error.path == "$.adaptation.vendor_finetune" for error in errors))
+
     def test_evaluation_rejects_composite_score(self) -> None:
         report = load_example("evaluation-report.json")
         report["composite_score"] = 0.91
