@@ -1,6 +1,6 @@
 # Instavar Voice adaptation and evaluation contract
 
-This directory implements the shared evidence layer for Instavar's TTS companion repositories. It does not contain a universal trainer. Model-specific repositories continue to own preprocessing, codec handling, LoRA or full-SFT training, checkpoint loading, and runtime integration.
+This directory implements the shared evidence layer for Instavar's TTS companion repositories. It does not contain a universal trainer. Model-specific repositories continue to own preprocessing, codec handling, LoRA or full-SFT training, provider-managed fine-tune requests, checkpoint or remote-model binding, and runtime integration.
 
 The public distribution is [instavar/instavar-voice-evaluation](https://github.com/instavar/instavar-voice-evaluation). The copy under the private Instavar product repository keeps the application and its pinned contract version reviewable together.
 
@@ -132,6 +132,17 @@ adaptation must state the evidence boundary for corpus audit, training,
 checkpoint save, fresh-process reload, held-out inference, evaluation, and
 packaging. Missing evidence stays visible as `not_recorded` or `blocked` rather
 than being implied by a repository-level `supported` label.
+
+Capability contract 1.3 adds `provider_managed_fine_tune` and the
+`provider_managed` runtime artifact mode, plus an explicit `websocket` runtime
+interface. Use them when a service accepts a
+dataset or voice-clone request but does not expose trainable weights, optimizer
+state, or a user-controlled checkpoint. This category is intentionally not an
+alias for LoRA, partial SFT, or full SFT. Its lifecycle evidence must bind the
+provider model identifier, request contract, returned remote identifier,
+response metadata, generated audio hashes, and every known retention or rights
+boundary. A remote identifier is not a content-addressed model artifact, and a
+successful provider job does not prove which parameters changed.
 
 Historical runs often predate the strict experiment and package contracts. Import them with the historical-run contract instead of inventing missing hashes. The record preserves stage-specific evidence and names the exact blockers that prevent migration into a complete experiment manifest or deployable artifact package.
 

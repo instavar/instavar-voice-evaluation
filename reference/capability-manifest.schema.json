@@ -15,7 +15,7 @@
     "known_gaps"
   ],
   "properties": {
-    "schema_version": { "enum": ["1.0.0", "1.1.0", "1.2.0"] },
+    "schema_version": { "enum": ["1.0.0", "1.1.0", "1.2.0", "1.3.0"] },
     "repository": {
       "type": "object",
       "additionalProperties": false,
@@ -44,7 +44,8 @@
         "lora": { "$ref": "#/$defs/capability" },
         "full_sft": { "$ref": "#/$defs/capability" },
         "partial_sft": { "$ref": "#/$defs/capability" },
-        "prompt_adapter": { "$ref": "#/$defs/capability" }
+        "prompt_adapter": { "$ref": "#/$defs/capability" },
+        "provider_managed_fine_tune": { "$ref": "#/$defs/capability" }
       }
     },
     "runtimes": {
@@ -57,7 +58,7 @@
           "id": { "type": "string", "minLength": 1 },
           "status": { "$ref": "#/$defs/capabilityStatus" },
           "artifact_mode": {
-            "enum": ["base", "adapter", "merged", "checkpoint"]
+            "enum": ["base", "adapter", "merged", "checkpoint", "provider_managed"]
           },
           "streaming": { "type": "boolean" },
           "evidence": { "$ref": "#/$defs/evidence" },
@@ -118,7 +119,7 @@
   "allOf": [
     {
       "if": {
-        "properties": { "schema_version": { "enum": ["1.1.0", "1.2.0"] } },
+        "properties": { "schema_version": { "enum": ["1.1.0", "1.2.0", "1.3.0"] } },
         "required": ["schema_version"]
       },
       "then": {
@@ -145,7 +146,7 @@
     },
     {
       "if": {
-        "properties": { "schema_version": { "const": "1.2.0" } },
+        "properties": { "schema_version": { "enum": ["1.2.0", "1.3.0"] } },
         "required": ["schema_version"]
       },
       "then": {
@@ -171,7 +172,7 @@
       "enum": ["reference", "optimized_cuda", "apple_silicon", "cpu_edge", "server", "experimental"]
     },
     "runtimeInterface": {
-      "enum": ["python", "cli", "http", "grpc"]
+      "enum": ["python", "cli", "http", "grpc", "websocket"]
     },
     "runtimeConformance": {
       "type": "object",

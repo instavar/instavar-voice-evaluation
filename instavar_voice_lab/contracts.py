@@ -40,6 +40,7 @@ ADAPTATION_MODES = {
     "full_sft",
     "partial_sft",
     "prompt_adapter",
+    "provider_managed_fine_tune",
 }
 RUNTIME_PROFILES = {
     "reference",
@@ -49,7 +50,7 @@ RUNTIME_PROFILES = {
     "server",
     "experimental",
 }
-RUNTIME_INTERFACES = {"python", "cli", "http", "grpc"}
+RUNTIME_INTERFACES = {"python", "cli", "http", "grpc", "websocket"}
 RUNTIME_CONFORMANCE_STATUSES = {"not_run", "smoke_tested", "validated", "negative_result"}
 LIFECYCLE_STAGES = {
     "corpus_audit",
@@ -142,8 +143,8 @@ def validate_capability_manifest(document: Any) -> list[ContractError]:
         errors,
     )
     schema_version = root.get("schema_version")
-    if schema_version not in {"1.0.0", "1.1.0", "1.2.0"}:
-        errors.append(ContractError("$.schema_version", "must equal 1.0.0, 1.1.0, or 1.2.0"))
+    if schema_version not in {"1.0.0", "1.1.0", "1.2.0", "1.3.0"}:
+        errors.append(ContractError("$.schema_version", "must equal 1.0.0, 1.1.0, 1.2.0, or 1.3.0"))
 
     repository = _mapping(root.get("repository"), "$.repository", errors)
     _required(repository, {"slug", "url", "evidence_revision"}, "$.repository", errors)
@@ -173,7 +174,7 @@ def validate_capability_manifest(document: Any) -> list[ContractError]:
         evidence = _evidence(capability.get("evidence"), f"{capability_path}.evidence", errors)
         if status in {"supported", "experimental"} and not evidence:
             errors.append(ContractError(f"{capability_path}.evidence", "is required for supported or experimental capabilities"))
-        if schema_version == "1.2.0" and status in {"supported", "experimental"}:
+        if schema_version in {"1.2.0", "1.3.0"} and status in {"supported", "experimental"}:
             lifecycle = _mapping(capability.get("lifecycle"), f"{capability_path}.lifecycle", errors)
             _required(lifecycle, LIFECYCLE_STAGES, f"{capability_path}.lifecycle", errors)
             for stage in sorted(LIFECYCLE_STAGES):
@@ -207,13 +208,18 @@ def validate_capability_manifest(document: Any) -> list[ContractError]:
             errors.append(ContractError(f"{runtime_path}.id", "must be unique"))
         runtime_ids.add(runtime_id)
         status = _enum(runtime.get("status"), CAPABILITY_STATUSES, f"{runtime_path}.status", errors)
-        _enum(runtime.get("artifact_mode"), {"base", "adapter", "merged", "checkpoint"}, f"{runtime_path}.artifact_mode", errors)
+        _enum(
+            runtime.get("artifact_mode"),
+            {"base", "adapter", "merged", "checkpoint", "provider_managed"},
+            f"{runtime_path}.artifact_mode",
+            errors,
+        )
         if not isinstance(runtime.get("streaming"), bool):
             errors.append(ContractError(f"{runtime_path}.streaming", "must be a boolean"))
         evidence = _evidence(runtime.get("evidence"), f"{runtime_path}.evidence", errors)
         if status == "supported" and not evidence:
             errors.append(ContractError(f"{runtime_path}.evidence", "is required for a supported runtime"))
-        if schema_version in {"1.1.0", "1.2.0"}:
+        if schema_version in {"1.1.0", "1.2.0", "1.3.0"}:
             _required(
                 runtime,
                 {"profile", "device", "interface", "precision", "batching", "conformance"},
@@ -286,7 +292,7 @@ def validate_capability_manifest(document: Any) -> list[ContractError]:
         for index, value in enumerate(values):
             _nonempty_string(value, f"$.evaluation.{name}[{index}]", errors)
 
-    if schema_version == "1.2.0":
+    if schema_version in {"1.2.0", "1.3.0"}:
         comparison = _mapping(evaluation.get("matched_comparison"), "$.evaluation.matched_comparison", errors)
         _required(
             comparison,

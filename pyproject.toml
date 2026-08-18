@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "instavar-voice-evaluation"
-version = "0.46.0"
-description = "Evidence contracts and evaluation utilities for open-source TTS adaptation"
+version = "0.47.0"
+description = "Evidence contracts and evaluation utilities for open-weight and provider-managed TTS adaptation"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
